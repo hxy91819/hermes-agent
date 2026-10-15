@@ -6,4 +6,4 @@ feature/remote-lifecycle-scan needs-feedback # design extension: remote executio
 feature/ssh-cron needs-feedback # design extension: SSH script cron; stacked on feature/remote-lifecycle-scan
 feature/shared-ssh-desktop needs-feedback # design extension: multiple profiles sharing an SSH desktop host
 fix/background-stop pr-open https://github.com/NousResearch/hermes-agent/pull/138977 # upstream defect: stop the actual remote process tree
-# H2 is registered after its owner hands off the verified fix.
+fix/ssh-socket-path pr-open https://github.com/NousResearch/hermes-agent/pull/138978 # upstream defect: bound every ControlMaster listener path
