@@ -131,6 +131,12 @@ CI 构建后先移动 payload，隔离 home 并禁止网络运行上游 `scripts
 查询/重跑：`gh run list --repo hxy91819/hermes-agent --workflow fork-release.yml`、`gh run view RUN_ID --repo hxy91819/hermes-agent`、`gh run rerun RUN_ID --repo hxy91819/hermes-agent --failed`。
 上传先建 draft，资产齐全后公开；已公开版本保留原资产，修订使用新 tag。普通 clone 默认得到聚合 main。
 
+### 固定发布引用与托管依赖
+
+部署方从本 Release 取 `release.json.commit`、tag 与各资产 SHA256，固定到其批准的发布组合；公开 Release 本身不等于平台已批准。实例与重试使用固定 tag/commit/hash，而不是移动的 main 或重新解析 latest。`hermes-ubuntu-x86_64.tar.gz` 内的 `hermes-agent/install-stamp.json.commit` 与 `release.json.commit` 相同。
+
+本次按提交中的 `uv.lock` 冻结构建 all/messaging/computer-use，随包提供环境、对应缓存及 PM 锁文件；Telegram 固定 `22.8`，微信二维码依赖 qrcode 固定 `7.4.2`，已预装，不需在实例浮动解析这两项。内置通道代码跟随制品 commit。外部平台插件未由本制品安装；将来纳入的托管插件及其懒加载依赖，须在构建时锁定版本并随批准制品交付，不能把实例现场解析最新版作为安装路径。用户通道 token、配对、模型及其他配置仍属于独立状态。
+
 ### #75 补丁迁移
 
 | 主题 | 分类与归属 | v0.22.1 处理 |
