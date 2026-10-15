@@ -1511,6 +1511,8 @@ def _job_doc_header(job_name: str, job_id: str, now_iso: str, mode: str) -> str:
 def _resolve_job_workdir(job: dict, job_id: str) -> Optional[str]:
     """Configured job workdir, or None when unset / no longer a directory (logged)."""
     workdir = (job.get("workdir") or "").strip() or None
+    if load_config().get("ssh_adaptation", {}).get("enabled"):
+        return workdir  # workbench adapter validates remotely at dispatch; never host fallback
     if workdir and not Path(workdir).is_dir():
         logger.warning(
             "Job '%s': configured workdir %r no longer exists — running without it",
