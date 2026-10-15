@@ -444,6 +444,11 @@ def _run_job_script(
     instead of the scripts-dir parent. See #69396. interpreter: the job's optional Python for
     ``.py`` scripts (#8714).
     """
+    from hermes_cli.config import load_config
+    if load_config().get("ssh_adaptation", {}).get("enabled"):
+        from cron.ssh_execution import run_script
+        return run_script(script_path, workdir=workdir, cancel_event=cancel_event, interpreter=interpreter)
+
     path, err = _resolve_script_path(script_path)
     if path is None:
         return False, err
