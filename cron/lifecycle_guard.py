@@ -1237,11 +1237,15 @@ def contains_gateway_lifecycle_command_or_referenced_script(
     return scan_gateway_lifecycle(command, cwd=cwd, read_remote_script=read_remote_script)[0]
 
 
-def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None) -> None:
+def check_gateway_lifecycle(prompt: Optional[str], script: Optional[str] = None, *, workdir: Optional[str] = None) -> None:
     """Raise ``GatewayLifecycleBlocked`` if *prompt* or *script* contains a gateway-lifecycle
     command. The script is read from disk and concatenated with the prompt so a command cannot slip
     through by being split across the two. Callers let the ``ValueError``-shaped exception
     propagate."""
+    from hermes_cli.config import load_config
+    if load_config().get("ssh_adaptation", {}).get("enabled"):
+        from cron.ssh_execution import check_lifecycle
+        return check_lifecycle(prompt, script, workdir=workdir)
     combined = prompt or ""
     python_script = False
     refusal: Optional[str] = None

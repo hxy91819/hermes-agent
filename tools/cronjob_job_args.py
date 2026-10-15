@@ -419,6 +419,10 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
     if not script or not script.strip():
         return None
 
+    from hermes_cli.config import load_config
+    if load_config().get("ssh_adaptation", {}).get("enabled"):
+        from cron.ssh_execution import validate_script
+        return validate_script(script)
     from hermes_constants import get_hermes_home
     raw = script.strip()
     scripts_dir = get_hermes_home() / "scripts"
