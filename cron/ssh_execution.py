@@ -85,8 +85,8 @@ def script_root():
     root = (
         load_config().get("ssh_adaptation", {}).get("script_root", "/workspace/scripts")
     )
-    if not PurePosixPath(root).is_absolute() or ".." in PurePosixPath(root).parts:
-        raise ValueError("script_root must be an absolute remote path")
+    if root not in ("/workspace/scripts", "/workspace/beta/scripts"):
+        raise ValueError("unsupported operator script root")
     return root
 
 
