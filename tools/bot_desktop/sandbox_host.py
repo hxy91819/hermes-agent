@@ -3,7 +3,7 @@
 Same launcher, same lease, same pane: only WHERE Xvnc + Xfce run changes. ``runtime`` decides between the
 gateway host and this module via ``placement()``; callers keep using ``runtime.start/stop/status/desktop_env``.
 
-Layout inside the sandbox, under ``<sandbox tmp>/hermes-bot-desktop/<profile>/``: ``launcher.sh`` (copied in
+Layout inside the sandbox, under ``<sandbox tmp>/hermes-bot-desktop-<profile>/<profile>/``: ``launcher.sh`` (copied in
 at start), ``env`` (published DISPLAY/XAUTHORITY/DBUS), ``rfb.sock`` (Xvnc's unix socket), ``launcher.pid``.
 Host-side state under ``<HERMES_HOME>/bot-desktop/``: ``sandbox.json`` = ``{"env_key": ..., "display": ...}``
 so status() knows which terminal environment owns the screen without re-deriving it.
@@ -100,7 +100,17 @@ def marker_sandbox_alive(marker: dict[str, Any]) -> bool:
 
 
 def _remote_dir(env: Any, profile: str) -> str:
-    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop/{profile}"
+    return f"{env.get_temp_dir().rstrip('/')}/hermes-bot-desktop-{profile}/{profile}"
+
+
+def _display_number() -> int:
+    """Each profile sharing an SSH namespace can select a distinct X display."""
+    from hermes_cli.config import load_config
+
+    value = load_config().get("bot_desktop", {}).get("display_number", 20)
+    if type(value) is not int or not 1 <= value <= 65535:
+        raise ValueError("bot_desktop.display_number must be an integer from 1 to 65535")
+    return value
 
 
 def desktop_home(env: Any) -> str:
@@ -239,7 +249,7 @@ def start(env: Any, profile: str, *, geometry: str, wait_seconds: float = 20.0,
     proc = streams.run_in(env, ["bash", "-c", seed], user=user, timeout=30)
     if proc.returncode != 0:
         raise RuntimeError(f"could not seed the sandbox desktop dir: {proc.stderr.decode('utf-8', 'replace')[-500:]}")
-    num = 20  # one profile per sandbox; the launcher's stale-lock logic handles a leftover :20
+    num = _display_number()
     child_env = {
         "HERMES_BD_PROFILE": profile, "HERMES_BD_DISPLAY_NUM": str(num), "HERMES_BD_SOCKET": f"{rdir}/rfb.sock",
         "HERMES_BD_XAUTH": f"{rdir}/Xauthority", "HERMES_BD_ENV_FILE": f"{rdir}/env",
