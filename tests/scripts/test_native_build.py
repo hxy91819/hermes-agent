@@ -48,7 +48,7 @@ def test_native_worker_passes_shared_toolchain_to_native_owner(tmp_path, monkeyp
     assert native_build.prepare_in_worker(request) == tmp_path / "out.prepared.json"
     assert prepared_tools == [(tmp_path / "source", tmp_path / "work", tmp_path / "cache")]
     assert calls == [{"source": tmp_path / "source", "out": tmp_path / "out", "ref": request["ref"],
-                      "cache": Path(selected["UV_CACHE_DIR"]), "tools": tmp_path / "cache/tools", "env": selected}]
+                      "cache": Path(selected["UV_CACHE_DIR"]), "tools": tmp_path / "cache/tools", "env": selected, "extras": None}]
 
 
 @pytest.mark.platforms("posix")
