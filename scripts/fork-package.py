@@ -10,6 +10,8 @@ from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import tempfile
+import sys
 import tomllib
 
 
@@ -28,40 +30,32 @@ def package(payload: Path, output: Path, tag: str, source: Path) -> None:
         for line in base.splitlines()
         if line.startswith("base ")
     )
-    # Both install paths report the real release baseline, independent of the new fork tag spelling.
-    subprocess.run(
-        [
-            "python3",
-            str(source / "scripts/write_install_stamp.py"),
-            "--output",
-            str(payload / "hermes-agent/install-stamp.json"),
-            "--commit",
-            commit,
-            "--base-version",
-            version,
-            "--distance",
-            "0",
-            "--display-version",
-            version,
-            "--source",
-            "fork-release",
-            "--update-mechanism",
-            "external",
-            "--runtime-dir",
-            "..",
-        ],
-        cwd=source,
-        check=True,
-        timeout=60,
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from scripts.write_install_stamp import write_stamp
+
+    write_stamp(
+        payload / "hermes-agent/install-stamp.json", commit=commit,
+        base_version=version, distance=0, display_version=version,
+        source="fork-release", update_mechanism="external", runtime_dir="..",
     )
     output.mkdir()
     with tarfile.open(
-        output / "hermes-ubuntu-x86_64.tar.gz", "w:gz", dereference=False
+        output / "hermes-ubuntu-x86_64.tar.gz", "w:gz", dereference=False, compresslevel=1
     ) as archive:
         archive.add(payload, arcname=".")
+    print("standalone archive complete", flush=True)
     stage = output / "image-stage"
     top = stage / "hermes-agent"
     shutil.copytree(payload / "hermes-agent", top, symlinks=True)
+    # Upstream deliberately excludes scripts from its runtime snapshot.
+    with tempfile.TemporaryDirectory(prefix="hermes-image-scripts-") as scratch:
+        archived = Path(scratch) / "scripts.tar"
+        subprocess.run(
+            ["git", "archive", "--format=tar", "--output", str(archived), commit, "scripts"],
+            cwd=source, check=True, timeout=60,
+        )
+        with tarfile.open(archived) as scripts:
+            scripts.extractall(top, filter="data")
     # The legacy image verifies pyproject version against src_version before running stages.
     project = top / "pyproject.toml"
     old_version = tomllib.loads(project.read_text(encoding="utf-8-sig"))["project"][
@@ -83,9 +77,10 @@ def package(payload: Path, output: Path, tag: str, source: Path) -> None:
     info["runtimeDir"] = ".fork-payload"
     stamp.write_text(json.dumps(info, indent=2) + "\n", encoding="utf-8")
     with tarfile.open(
-        output / "hermes-agent.tar.gz", "w:gz", dereference=False
+        output / "hermes-agent.tar.gz", "w:gz", dereference=False, compresslevel=1
     ) as archive:
         archive.add(top, arcname="hermes-agent")
+    print("image archive complete", flush=True)
     shutil.rmtree(stage)
     digest = file_sha256(output / "hermes-agent.tar.gz")
     metadata = {
