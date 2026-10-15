@@ -148,7 +148,7 @@ SSH cron 沿用显式开关 `ssh_adaptation.enabled: true`，并要求 `terminal
 Release 另提供 `hermes-agent.tar.gz`（单层 `hermes-agent/` 顶级目录）及 `latest.json`。
 元数据沿用 `version`、`src_version`、`git_commit`、`git_commit_full`、`cos_url` 字段；`version` 为 fork tag，COS 目录按既有规则为 `hermes-agent-<version>`。
 源码元数据在打包时写为基线版本 0.22.1，与 install stamp 一致，Git 分支中的 pyproject/uv.lock 不变。包里附带 `.fork-payload` 运行时；兼容 installer 接受旧 `venv/python-deps/node-deps/path/config` 阶段，并发布旧 `venv/bin/hermes` 路径，不在宿主重新构建运行时。
-原版 installer 保留为 `scripts/install-upstream.sh`；已有流水线额外安装的插件/镜像组件仍由该流水线负责，未声称本任务已验证 mono2 完整制镜。
+原版 installer 保留为 `scripts/install-upstream.sh`；已有流水线额外安装的插件/镜像组件仍由该流水线负责，完整产品制镜由镜像流水线另行验收。
 
 由部署方在获得 COS 发布授权后执行（本任务不执行）：
 
