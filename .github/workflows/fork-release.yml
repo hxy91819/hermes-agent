@@ -1,0 +1,133 @@
+name: Fork Ubuntu Release
+on:
+  push:
+    tags: ['fork-v*']
+permissions:
+  contents: read
+concurrency:
+  group: fork-release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.repository == 'hxy91819/hermes-agent'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - name: Build upstream standalone PM payload
+        run: |
+          python3 -S -B scripts/bundles/native_build.py \
+            --source "$GITHUB_WORKSPACE" --work "$RUNNER_TEMP/payload-work" \
+            --cache "$RUNNER_TEMP/payload-cache" --out "$RUNNER_TEMP/payload" --ref HEAD --extra all --extra messaging --extra computer-use
+      - name: Verify relocated payload offline
+        run: sudo --preserve-env=PATH unshare --net bash scripts/smoke-payload.sh "$RUNNER_TEMP/payload"
+      - name: Package verified payload
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 scripts/fork-package.py --payload "$RUNNER_TEMP/payload" --out "$GITHUB_WORKSPACE/dist" --tag "$RELEASE_TAG"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: fork-release
+          path: dist/*
+          if-no-files-found: error
+  install-smoke:
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fork-release
+          path: dist
+      - name: Install downloaded artifact in a clean home
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+          mkdir "$RUNNER_TEMP/installed" "$RUNNER_TEMP/clean-home"
+          tar -xzf hermes-ubuntu-x86_64.tar.gz -C "$RUNNER_TEMP/installed"
+          env -i HOME="$RUNNER_TEMP/clean-home" HERMES_HOME="$RUNNER_TEMP/clean-home/profile" PATH=/usr/bin:/bin \
+            "$RUNNER_TEMP/installed/bin/hermes" --version
+          env -i HOME="$RUNNER_TEMP/clean-home" HERMES_HOME="$RUNNER_TEMP/clean-home/profile" PATH=/usr/bin:/bin \
+            "$RUNNER_TEMP/installed/bin/hermes" tools list
+      - name: Install legacy image format with its stage contract
+        run: |
+          mkdir "$RUNNER_TEMP/image"
+          tar -xzf dist/hermes-agent.tar.gz -C "$RUNNER_TEMP/image"
+          root="$RUNNER_TEMP/image/hermes-agent"
+          for stage in venv python-deps node-deps path config; do
+            env -i HOME="$RUNNER_TEMP/clean-home" PATH=/usr/bin:/bin \
+              bash "$root/scripts/install.sh" --skip-setup --dir "$root" --hermes-home "$RUNNER_TEMP/clean-home/profile" --non-interactive --stage "$stage"
+          done
+          env -i HOME="$RUNNER_TEMP/clean-home" PATH=/usr/bin:/bin "$root/venv/bin/hermes" tools list
+          python3 - "$root" <<'PY'
+          import json, sys, tomllib
+          from pathlib import Path
+          root = Path(sys.argv[1])
+          metadata = json.loads(Path('dist/latest.json').read_text())
+          assert tomllib.loads((root / 'pyproject.toml').read_text())['project']['version'] == metadata['src_version']
+          PY
+  publish:
+    needs: install-smoke
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: fork-release
+          path: dist
+      - name: Publish the verified bytes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          cd dist
+          sha256sum -c SHA256SUMS
+          python3 - <<'PY'
+          import json, os, subprocess
+          meta = json.load(open('release.json'))
+          assert meta['tag'] == os.environ['RELEASE_TAG']
+          ref = subprocess.check_output(['gh', 'api', 'repos/' + os.environ['GH_REPO'] + '/git/ref/tags/' + meta['tag']], text=True)
+          obj = json.loads(ref)['object']
+          if obj['type'] == 'tag':
+              obj = json.loads(subprocess.check_output(['gh', 'api', obj['url']], text=True))['object']
+          assert obj['type'] == 'commit' and obj['sha'] == meta['commit']
+          PY
+          if gh release view "$RELEASE_TAG" --json isDraft > release-state.json 2>/dev/null; then
+            python3 -c 'import json; assert json.load(open("release-state.json"))["isDraft"], "Published release is immutable; use a new tag"'
+          else
+            gh release create "$RELEASE_TAG" --verify-tag --draft --title "$RELEASE_TAG" --notes-file release.json
+          fi
+          gh release upload "$RELEASE_TAG" hermes-ubuntu-x86_64.tar.gz hermes-agent.tar.gz latest.json SHA256SUMS release.json --clobber
+          gh release edit "$RELEASE_TAG" --draft=false
+          gh release view "$RELEASE_TAG" --json url,isDraft,assets
+  release-smoke:
+    needs: publish
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the public Release and install in a clean home
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          gh release download "$RELEASE_TAG" --pattern hermes-agent.tar.gz --pattern latest.json --pattern SHA256SUMS
+          awk '$2 == "hermes-agent.tar.gz" || $2 == "latest.json"' SHA256SUMS | sha256sum -c -
+          mkdir "$RUNNER_TEMP/release-install" "$RUNNER_TEMP/release-home"
+          tar -xzf hermes-agent.tar.gz -C "$RUNNER_TEMP/release-install"
+          root="$RUNNER_TEMP/release-install/hermes-agent"
+          for stage in venv python-deps node-deps path config; do
+            env -i HOME="$RUNNER_TEMP/release-home" PATH=/usr/bin:/bin \
+              bash "$root/scripts/install.sh" --dir "$root" --hermes-home "$RUNNER_TEMP/release-home/profile" --non-interactive --stage "$stage"
+          done
+          env -i HOME="$RUNNER_TEMP/release-home" HERMES_HOME="$RUNNER_TEMP/release-home/profile" PATH=/usr/bin:/bin \
+            "$root/venv/bin/hermes" --version
+          env -i HOME="$RUNNER_TEMP/release-home" HERMES_HOME="$RUNNER_TEMP/release-home/profile" PATH=/usr/bin:/bin \
+            "$root/venv/bin/hermes" tools list
