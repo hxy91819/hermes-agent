@@ -141,7 +141,7 @@ CI 构建后先移动 payload，隔离 home 并禁止网络运行上游 `scripts
 | sandbox_host 的分 Profile 目录与显示号 | 设计扩展：`feature/shared-ssh-desktop` | 仍需；固定 beta 判定改为每 Profile 的 `bot_desktop.display_number`（默认 20，第二个 Profile 配 21） |
 
 SSH cron 沿用显式开关 `ssh_adaptation.enabled: true`，并要求 `terminal.backend: ssh`；`ssh_adaptation.script_root` 默认 `/workspace/scripts`，可按 Profile 配置绝对远端目录。workdir 限定 `/workspace` 内，保持旧 POC 合同；失败不回退宿主执行。
-原 #75 六文件 +64/-24 不包含 adapter/guard 的全部成本，不作为现版分支行数承诺。三项功能均不是已证明的上游 Bug；没有因升级已覆盖而删除功能。H1/H2 状态以其交付为准。
+原 #75 六文件 +64/-24 不包含 adapter/guard 的全部成本，不作为现版分支行数承诺。三项功能均不是已证明的上游 Bug；没有因升级已覆盖而删除功能。H1 已交付 `fix/background-stop`（上游缺陷，PR #138977）；上游专用分支不进聚合。H2 状态以其交付为准。
 
 ### COS 镜像入口兼容
 

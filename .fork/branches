@@ -5,4 +5,5 @@ feature/image-install-compat fork-only # product adaptation: prebuilt package an
 feature/remote-lifecycle-scan needs-feedback # design extension: remote execution namespace for guard reads
 feature/ssh-cron needs-feedback # design extension: SSH script cron; stacked on feature/remote-lifecycle-scan
 feature/shared-ssh-desktop needs-feedback # design extension: multiple profiles sharing an SSH desktop host
-# H1/H2 are registered only after their owners hand off verified fixes.
+fix/background-stop pr-open https://github.com/NousResearch/hermes-agent/pull/138977 # upstream defect: stop the actual remote process tree
+# H2 is registered after its owner hands off the verified fix.
