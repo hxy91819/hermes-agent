@@ -140,7 +140,7 @@ CI 构建后先移动 payload，隔离 home 并禁止网络运行上游 `scripts
 | terminal_tool_backends 的固定短 socket adapter | 上游缺陷：H2 的 `fix/ssh-socket-path` | 由 H2 通用修复 `fix/ssh-socket-path` 取代；PR #138978，保持原分支历史 |
 | sandbox_host 的分 Profile 目录与显示号 | 设计扩展：`feature/shared-ssh-desktop` | 仍需；固定 beta 判定改为每 Profile 的 `bot_desktop.display_number`（默认 20，第二个 Profile 配 21） |
 
-SSH cron 沿用显式开关 `ssh_adaptation.enabled: true`，并要求 `terminal.backend: ssh`；`ssh_adaptation.script_root` 默认 `/workspace/scripts`，可按 Profile 配置绝对远端目录。workdir 限定 `/workspace` 内，保持旧 POC 合同；失败不回退宿主执行。
+SSH cron 沿用显式开关 `ssh_adaptation.enabled: true`，并要求 `terminal.backend: ssh`；`ssh_adaptation.script_root` 默认 `/workspace/scripts`，沿用旧合同，可按 Profile 选择 `/workspace/scripts` 或 `/workspace/beta/scripts`。workdir 限定 `/workspace` 内，保持旧 POC 合同；失败不回退宿主执行。
 原 #75 六文件 +64/-24 不包含 adapter/guard 的全部成本，不作为现版分支行数承诺。三项功能均不是已证明的上游 Bug；没有因升级已覆盖而删除功能。H1 已交付 `fix/background-stop`（上游缺陷，PR #138977）；上游专用分支不进聚合。H2 已交付 `fix/ssh-socket-path`（上游缺陷，PR #138978），与 H1 一起列入聚合。
 
 ### COS 镜像入口兼容
