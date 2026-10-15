@@ -118,7 +118,7 @@ scripts/fork-aggregate --promote  # 成功后移动根目录 main 并推送到 f
 # 从 https://github.com/hxy91819/hermes-agent/releases 选择固定版本
 TAG=fork-v0.22.1-YYYYMMDD.N
 gh release download "$TAG" --repo hxy91819/hermes-agent --pattern 'hermes-ubuntu-x86_64.tar.gz' --pattern SHA256SUMS
-sha256sum -c SHA256SUMS
+awk '$2 == "hermes-ubuntu-x86_64.tar.gz"' SHA256SUMS | sha256sum -c -
 mkdir -p /opt/hermes/"$TAG"
 tar -xzf hermes-ubuntu-x86_64.tar.gz -C /opt/hermes/"$TAG"
 /opt/hermes/"$TAG"/bin/hermes --version
