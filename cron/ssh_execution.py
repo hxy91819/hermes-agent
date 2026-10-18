@@ -224,7 +224,7 @@ def read_script(
     if r.returncode:
         raise ValueError("workbench script read failed")
     entry = json.loads(r.stdout)
-    if entry["unsafe"] or not entry["exists"]:
+    if entry["unsafe"] or (execution_entry and not entry["exists"]):
         raise ValueError("workbench script unreadable or oversized")
     return entry if metadata else entry["text"]
 
