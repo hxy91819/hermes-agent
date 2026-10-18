@@ -677,6 +677,18 @@ class TestEnvironmentHints:
         assert "Terminal backend: docker" in result
         assert "inside" in result.lower()
 
+    @pytest.mark.parametrize("probe", [None, "OS: Linux"])
+    def test_remote_environment_distinguishes_host_skill_management(self, monkeypatch, probe):
+        import agent.prompt_builder as pb
+        monkeypatch.setattr(pb, "is_wsl", lambda: False)
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setattr(pb, "_probe_remote_backend", lambda _: probe)
+        result = pb.build_environment_hints()
+        assert "skills_list" in result and "skill_view" in result
+        assert "skill_manage" in result and "Hermes host" in result
+        assert "does not install" in result
+        assert "home, and cwd of the Hermes process are irrelevant" not in result
+
     def test_build_environment_hints_uses_terminal_cwd_over_launch_dir(self, monkeypatch, tmp_path):
         """THE BUG: gateway/cron set TERMINAL_CWD but the prompt emitted os.getcwd()
         (the daemon launch dir). Regression for #24882/#24969/#27383/#29265."""
