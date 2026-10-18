@@ -1639,6 +1639,10 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     raw = str(workdir).strip()
     if not raw:
         return None
+    from hermes_cli.config import load_config
+    if load_config().get("ssh_adaptation", {}).get("enabled"):
+        from cron.ssh_execution import normalize_workdir
+        return normalize_workdir(raw)
     expanded = Path(raw).expanduser()
     if not expanded.is_absolute():
         raise ValueError(
@@ -1852,7 +1856,7 @@ def create_job(
         raise ValueError(EMPTY_PAYLOAD_ERROR)
     # Reject gateway-lifecycle commands (respawn loops) here, not just in the CLI: covers the tool.
     from cron.lifecycle_guard import check_gateway_lifecycle
-    check_gateway_lifecycle(prompt_text, f["script"])
+    check_gateway_lifecycle(prompt_text, f["script"], workdir=f["workdir"])
 
     label_source = (
         prompt_text
