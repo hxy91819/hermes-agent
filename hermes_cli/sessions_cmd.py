@@ -140,6 +140,7 @@ def _cmd_repair(args):
         f"    hermes sessions recover --source {source_hint} \\\n"
         "        --output recovered-state.db"
     )
+    return 1
 
 
 def _cmd_recover(args):
