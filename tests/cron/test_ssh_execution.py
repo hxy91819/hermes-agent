@@ -59,6 +59,11 @@ def test_guard_uses_execution_cwd_and_never_falls_back(workbench):
     (root / 'helper').write_text('echo safe')
     check_gateway_lifecycle('', 'main.sh', workdir='/workspace')
     (root / 'helper').unlink()
+    # As in the native reader, a missing referenced file has no content to scan.
+    # The explicitly configured entry itself still must exist.
+    check_gateway_lifecycle('', 'main.sh', workdir='/workspace')
+    assert remote.validate_script('missing.sh') is not None
+    (root / 'helper').write_text('x' * 1048577)
     with pytest.raises(GatewayLifecycleBlocked):
         check_gateway_lifecycle('', 'main.sh', workdir='/workspace')
     config['terminal']['backend'] = 'local'
@@ -83,3 +88,10 @@ def test_cancel_stops_remote_process_group(workbench):
     # health: allow HX013 -- observe beyond the cancelled writer's deadline to prove it cannot write late
     threading.Event().wait(2)
     assert not (root / 'late').exists()
+
+
+def test_natural_language_prompt_does_not_require_a_remote_file(workbench):
+    # The native guard ignores nonexistent references, including prose that shlex
+    # treats as an executable name. SSH must preserve that classification.
+    check_gateway_lifecycle('Reply with exactly COMPARE_PIN_OK.', None)
+    check_gateway_lifecycle('用terminal在工作环境/workspace/result.txt追加一行任务成功。', None)
