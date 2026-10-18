@@ -432,9 +432,9 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # seconds per browser command (screenshot, navigate, etc.)
         "snapshot_threshold": 15000,  # max chars before snapshot truncate-and-store (min 1000)
         "record_sessions": False,  # auto-record browser sessions as WebM videos
-        # headed: visible Chromium window (local); skips per-turn cleanup, idle reaper still applies
-        "headed": False,
+        "headed": False,  # visible local Chromium; skips per-turn cleanup, not the idle reaper
         "allow_private_urls": False,  # allow private/internal IPs (localhost, 192.168.x.x, ...)
+        "allow_loopback_urls": False,  # opt in only when the browser runs in the user's workbench
         # Local browser engine for both drivers. "auto" = Chrome; "lightpanda" = faster navigation,
         # no screenshots (Browser Use mode spawns `lightpanda serve` per session; built-in tools
         # pass `--engine <value>` to agent-browser with Chrome fallback); "chrome" = explicit.

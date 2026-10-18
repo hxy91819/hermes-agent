@@ -154,6 +154,15 @@ With auto-routing disabled, private URLs are rejected with
 `browser.allow_private_urls: true` (which lets the cloud provider attempt them —
 usually won't work since Browserbase etc. can't reach your LAN).
 
+For a CDP browser deployed **inside the user's workbench**, set
+`browser.allow_loopback_urls: true` to preview workbench services on `localhost`,
+`127.0.0.0/8`, or `::1` without permitting other private addresses. It defaults
+to false and follows the active profile. Enable it only after verifying where
+the browser runs: a loopback CDP tunnel does not prove browser colocation.
+Keep `allow_private_urls` false. Metadata, link-local and VPC addresses remain
+subject to the existing guards; website deny rules still apply. This does not
+turn the browser's best-effort URL checks into a network firewall.
+
 Requirements: the local sidecar uses the same `agent-browser` CLI as pure local
 mode, so you need it installed (`hermes setup tools → Browser Automation`
 auto-installs it). Post-navigation redirects from a public URL onto a private
