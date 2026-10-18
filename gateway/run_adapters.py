@@ -1056,12 +1056,15 @@ class GatewayAdapterLifecycleMixin:
                     self.pairing_stores[name] = (
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
-            fields = {"served_profiles": served}
-            if initialization_failed is not None:
-                # Routing membership alone does not mean adapter initialization succeeded.
-                # Publish only profile names: exception text may contain credentials.
-                fields["initialization_failed_profiles"] = sorted(initialization_failed)
-            publish_runtime_status(**fields)
+            # Keep the complete failure set across unrelated profile lifecycle changes.
+            failed = set(initialization_failed if initialization_failed is not None else
+                         getattr(self, "_initialization_failed_profiles", ())) & set(served)
+            self._initialization_failed_profiles = failed
+            for name in failed:
+                self._served_profile_signatures.pop(name, None)
+            # Publish names only; exception text can contain credentials.
+            publish_runtime_status(served_profiles=served,
+                                   initialization_failed_profiles=sorted(failed))
             # The host record is what a second `gateway run` reads to decide attach-vs-start; keep
             # its served set in step with the live one (it is republished, never re-claimed).
             from gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record
