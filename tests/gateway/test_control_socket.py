@@ -474,3 +474,25 @@ def test_windows_pipe_query_is_bounded_when_the_peer_never_answers(home: Path, m
         assert time.monotonic() - start < 2.0
     finally:
         released.set()
+
+
+def test_live_status_includes_rescan_failure_before_disk_writer_settles(tmp_path, monkeypatch):
+    """An acknowledged rescan must not read yesterday's ready snapshot from disk."""
+    import json
+    import os
+    from unittest.mock import Mock
+    from gateway import status
+    from gateway.control_socket import build_status_payload
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "gateway_state.json").write_text(json.dumps({
+        "pid": os.getpid(), "gateway_state": "running", "initialization_failed_profiles": [],
+    }))
+    writer = Mock()
+    monkeypatch.setattr(status, "_get_runtime_status_writer", lambda: writer)
+    status.publish_runtime_status(initialization_failed_profiles=["sales"])
+    reply = build_status_payload()
+    assert reply["initialization_failed_profiles"] == ["sales"]
+    assert reply["answering_pid"] == os.getpid()
+    reply["initialization_failed_profiles"].clear()
+    assert build_status_payload()["initialization_failed_profiles"] == ["sales"]
