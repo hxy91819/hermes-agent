@@ -69,16 +69,20 @@ def test_profile_repair_releases_only_target_and_restores_it(tmp_path, monkeypat
     monkeypatch.setattr(host_attach, "profile_name_for_home", lambda home: "support")
     calls = []
 
-    def stop(host, name):
+    def stop(host, name, *, repair_lease):
         assert host == root and name == "support"
-        assert (home / "gateway.parked").exists()
+        from gateway.profile_repair_lease import begin_lease
+        begin_lease(home, repair_lease)
+        assert not (home / "gateway.parked").exists()
         if release:
             holder.communicate("\n", timeout=10)
         calls.append("stop")
         return {"unserved": name}
 
-    def start(host, name):
+    def start(host, name, *, repair_token):
         assert host == root and name == "support"
+        from gateway.profile_repair_lease import end_lease
+        end_lease(home, repair_token)
         assert not (home / "gateway.parked").exists()
         if release:
             with SessionDB(db_path=path) as resumed:
@@ -123,3 +127,20 @@ def test_other_root_same_name_never_stops_profile(tmp_path, monkeypatch):
     monkeypatch.setattr(control_socket, 'request_unserve_profile', forbidden)
     monkeypatch.setattr(control_socket, 'request_serve_profile_hot', forbidden)
     assert repair_with_profile_paused(path, backup=True)['repaired']
+
+
+def test_dead_repair_lease_waits_for_lock_and_preserves_user_stop(tmp_path):
+    import json
+    from gateway.profile_repair_lease import lease_active, lease_path, retire_expired_lease
+    from hermes_state_repair import _cross_process_repair_lock
+    lease_path(tmp_path).write_text(json.dumps({'pid': 999999999, 'start_time': 1, 'token': 'dead'}))
+    marker = tmp_path / 'gateway.parked'
+    marker.touch()
+    with _cross_process_repair_lock(tmp_path / 'state.db') as locked:
+        assert locked
+        assert lease_active(tmp_path)
+        assert lease_path(tmp_path).exists()
+    assert not lease_active(tmp_path)
+    retire_expired_lease(tmp_path)
+    assert not lease_path(tmp_path).exists()
+    assert marker.exists()

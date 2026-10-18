@@ -111,3 +111,75 @@ def test_store_recovery_keeps_shared_loop_responsive(tmp_path, monkeypatch):
 
     asyncio.run(exercise())
     assert observed == [home]
+
+
+def test_killed_repair_is_automatically_unserved_then_restored(mux):
+    from tests.waiting import wait_until
+    root, home = mux['root'], mux['boot']
+    proc, desc = start_daemon(mux)
+    repair = None
+    ready = home / 'repair-test-ready'
+    try:
+        sid = asyncio.run(open_session_for(root, home, desc))
+        code = '''
+import sys,time
+from pathlib import Path
+import hermes_state_repair
+from hermes_cli.sessions_repair_owner import repair_with_profile_paused
+path = Path(sys.argv[1])
+def blocked(path, *, backup):
+    with hermes_state_repair._cross_process_repair_lock(path) as locked:
+        assert locked
+        path.with_name('repair-test-ready').touch()
+        sys.stdin.readline()
+hermes_state_repair.repair_state_db_schema = blocked
+repair_with_profile_paused(path, backup=True)
+'''
+        repair = subprocess.Popen([sys.executable, '-c', code, str(home / 'state.db')],
+                                  cwd=ROOT, env=mux['env'], stdin=subprocess.PIPE,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        wait_until(ready.exists, timeout=25, what='repair holds lock after target unserved')
+        assert not (home / 'gateway.parked').exists()
+        assert home.resolve() not in served_homes(control(root, 'identify'))
+        assert root.resolve() in served_homes(control(root, 'identify'))
+        repair.kill()
+        repair.wait(timeout=10)
+        # No explicit rescan/serve: the existing watcher recovers the gateway-owned lease.
+        wait_until(lambda: home.resolve() in served_homes(control(root, 'identify')),
+                   timeout=50, interval=.2, what='dead repair caller automatically restored')
+        after = control(root, 'identify')
+        assert after['instance_id'] == desc['instance_id']
+        assert not (home / 'gateway.repair-lease.json').exists()
+        asyncio.run(continue_session(root, home, after, sid, 'after-killed-repair'))
+    finally:
+        if repair is not None and repair.poll() is None:
+            repair.kill()
+            repair.wait(timeout=10)
+        stop(proc, expect=None)
+
+
+@pytest.mark.parametrize("multiplex", [False, True])
+def test_launch_profile_repair_refuses_without_stopping_gateway(mux, multiplex):
+    root = mux['root']
+    mux["config"]["gateway"]["multiplex_profiles"] = multiplex
+    (root / "config.yaml").write_text(json.dumps(mux["config"]))
+    proc, desc = start_daemon(mux)
+    try:
+        sid = asyncio.run(open_session_for(root, root, desc))
+        asyncio.run(continue_session(root, root, desc, sid, 'main-before-repair'))
+        with closing(sqlite3.connect(root / 'state.db', isolation_level=None)) as db:
+            db.execute('PRAGMA writable_schema=ON')
+            db.execute("INSERT INTO sqlite_master SELECT type,name,tbl_name,rootpage,sql "
+                       "FROM sqlite_master WHERE name='idx_sessions_source'")
+        result = subprocess.run([sys.executable, '-m', 'hermes_cli.main', '-p', 'default', 'sessions', 'repair'],
+                                cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=90, check=False)
+        assert result.returncode == 1, result.stdout
+        assert 'live writer still holds state.db' in result.stdout
+        assert control(root, 'identify')['instance_id'] == desc['instance_id']
+        assert proc.poll() is None
+        assert not (root / 'gateway.repair-lease.json').exists()
+        with closing(sqlite3.connect(root / 'state.db')) as db:
+            with pytest.raises(sqlite3.DatabaseError, match='already exists'):
+                db.execute('PRAGMA integrity_check').fetchall()
+    finally:
+        stop(proc, expect=None)

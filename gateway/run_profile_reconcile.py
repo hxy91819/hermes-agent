@@ -113,6 +113,9 @@ class GatewayProfileReconcileMixin:
             return {**result, "pending": True, "served_profiles": self.served_profile_names()}
         async with self._reconcile_lock():
             active = getattr(self, "_primary_profile_name", None) or "default"
+            from gateway.profile_repair_lease import retire_expired_lease
+            for _, home in profiles_to_serve(multiplex=True, include_parked=True):
+                retire_expired_lease(home)
             live = {str(name): Path(home) for name, home in profiles_to_serve(multiplex=True)}
             listed = set(live)  # a probe skip below is not a deletion: it never clears a parked verdict
             known = dict(self._served_profile_homes or {})
@@ -412,7 +415,8 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
     """Build on the owning loop; socket handlers themselves run on executor threads."""
     loop = asyncio.get_running_loop()
 
-    async def apply(name):
+    async def apply(name, params):
+        from gateway.profile_repair_lease import begin_lease, end_lease, lease_active
         from hermes_cli.profiles import profiles_to_serve, profile_is_parked
         if not runner._multiplex_on() or not runner._running or runner._served_profile_homes is None:
             return {"error": "host multiplexer is not ready"}
@@ -424,12 +428,18 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             if not serve:
                 if name not in known:
                     return {"error": f"profile '{name}' is not served"}
+                if params.get("repair_lease") is not None:
+                    begin_lease(known[name], params["repair_lease"])
                 await runner._unserve_profile(name, known.pop(name))
                 runner._record_served_profiles(active, list(known.items()))
                 return {"unserved": name, "served_profiles": runner.served_profile_names()}
             installed = dict(profiles_to_serve(True, include_parked=True))
             if name not in installed:
                 return {"error": f"unknown profile '{name}'"}
+            if params.get("repair_token") is not None:
+                end_lease(installed[name], params["repair_token"])
+            if lease_active(installed[name]):
+                return {"error": "Profile is under repair maintenance"}
             if name != "default" and profile_is_parked(installed[name]):
                 return {"error": f"profile '{name}' is parked (gateway.parked)"}
             if name in known:
@@ -441,7 +451,7 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
             return {"served": name, "served_profiles": result["served_profiles"]}
 
     def handler(params):
-        future = asyncio.run_coroutine_threadsafe(apply(params.get("name")), loop)
+        future = asyncio.run_coroutine_threadsafe(apply(params.get("name"), params), loop)
         try:
             return future.result(timeout=5.0)
         except TimeoutError:
