@@ -377,7 +377,12 @@ class GatewayProfileReconcileMixin:
             try:
                 with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
                     from hermes_state_registry import close_all_under
-                    close_all_under(home)
+                    await asyncio.to_thread(close_all_under, home)
+                    # Closed SQLite handles can retain prepared statements through
+                    # unreachable cycles from completed turns. Finalize them before
+                    # a maintenance caller probes this now-retired Profile's file.
+                    import gc
+                    await asyncio.to_thread(gc.collect)
                 with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
                     from plugins.memory import import_provider_module  # catalog plugin since it left core
                     import_provider_module("holographic", "store").MemoryStore.release_all_under(home)

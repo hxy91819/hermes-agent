@@ -42,7 +42,13 @@ async def _build_profile_authority(runner, name, home, *, register):
     # Each home's store resolves through the runner's scope-following handle cache, exactly
     # the handle every later scoped read of that profile uses (one writer per state.db).
     with _profile_runtime_scope(home, hydrate_secrets=False):
-        db = getattr(runner._session_db, '_db', runner._session_db)
+        def open_store():
+            store = runner._session_db
+            return getattr(store, '_db', store)
+
+        # Opening a malformed store can perform a backup and repair. Keep that
+        # work off the shared loop; to_thread preserves this Profile's context.
+        db = await asyncio.to_thread(open_store)
         if db is None or (await asyncio.to_thread(Path(db.db_path).resolve)).parent != home:
             raise RuntimeError(f'session authority database does not belong to the reserved profile {home}')
         registry.add(home, None, name=name)
