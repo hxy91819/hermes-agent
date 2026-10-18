@@ -80,3 +80,32 @@ def test_explicit_skills_dir_monkeypatch_still_wins(tmp_path, monkeypatch):
 
     assert result["success"] is True
     assert Path(result["skill_dir"]) == patched_skill_dir
+
+
+def test_host_skill_install_is_visible_to_new_task_with_remote_terminal(tmp_path, monkeypatch):
+    """Remote extraction alone is not installation; host tools persist across tasks."""
+    host_home = tmp_path / "host"
+    remote_home = tmp_path / "remote"
+    _write_skill(remote_home, "reports", "remote-only", "not installed on host")
+    skills_tool = _reload_skills_tool(host_home, monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "ssh")
+    monkeypatch.setenv("TERMINAL_CWD", str(remote_home))
+    from tools.skill_manager_tool import skill_manage
+
+    body = "---\nname: installed-report\ndescription: Use for CSV totals.\n---\n\n# Report V1\n"
+    result = json.loads(skill_manage(action="", name="", task_id="installer", operations=[
+        {"action": "create", "name": "installed-report", "content": body},
+        {"action": "write_file", "name": "installed-report", "file_path": "scripts/report.py",
+         "file_content": "print('19.00/V1')\n"},
+    ]))
+    assert result["success"] is True
+    listed = skills_tool.skills_list(task_id="new-session")
+    assert "installed-report" in listed
+    assert "remote-only" not in listed
+    viewed = json.loads(skills_tool.skill_view("installed-report", task_id="new-session", preprocess=False))
+    assert viewed["content"] == body
+    assert Path(viewed["skill_dir"]).is_relative_to(host_home)
+    assert "Hermes host" in viewed["path_hint"]
+    script = json.loads(skills_tool.skill_view(
+        "installed-report", file_path="scripts/report.py", task_id="new-session", preprocess=False))
+    assert script["content"] == "print('19.00/V1')\n"
