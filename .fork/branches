@@ -11,3 +11,4 @@ fix/remote-skill-ownership fork-only # product adaptation: host-owned skills und
 fix/browser-workbench-loopback fork-only # product adaptation: opt-in workbench loopback previews
 fix/cron-reference-parity fork-only # product adaptation: missing remote references remain non-scripts; stacked on feature/ssh-cron
 fix/cron-model-binding pr-open https://github.com/NousResearch/hermes-agent/pull/141155 # upstream defect: retain named model route and reject migrated credential endpoints
+fix/profile-stop-shared-gateway upstream-bug # do not kill the host multiplexer when parking a satellite; PR deferred
