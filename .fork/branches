@@ -12,6 +12,4 @@ fix/browser-workbench-loopback fork-only # product adaptation: opt-in workbench 
 fix/cron-reference-parity fork-only # product adaptation: missing remote references remain non-scripts; stacked on feature/ssh-cron
 fix/cron-model-binding pr-open https://github.com/NousResearch/hermes-agent/pull/141155 # upstream defect: retain named model route and reject migrated credential endpoints
 fix/profile-stop-shared-gateway pr-open https://github.com/NousResearch/hermes-agent/pull/141203 # upstream defect: park a satellite without terminating the shared host
-fix/session-repair fork-only # upstream defect: return failure when database repair is refused
-
-fix/session-repair needs-feedback # report failed database repair through a nonzero CLI exit; no upstream PR yet
+fix/session-repair fork-only # upstream defect: report repair failure and pause only the owning profile; no upstream PR yet
