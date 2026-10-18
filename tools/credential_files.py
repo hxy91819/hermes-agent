@@ -7,6 +7,7 @@ dirs, and host cache dirs to mount or sync in, at creation and before each comma
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import posixpath
@@ -164,6 +165,13 @@ def get_credential_file_mounts() -> list[dict[str, str]]:
 
 # --- Skills directory mounts ---
 
+def ssh_profile_sync_base(remote_home: str = "~", hermes_home: Path | None = None) -> str:
+    """Stable remote namespace for one host profile sharing an SSH account."""
+    home = (hermes_home or get_hermes_home()).resolve()
+    identity = hashlib.sha256(str(home).encode()).hexdigest()
+    return f"{remote_home.rstrip('/')}/.hermes/profiles/{identity}"
+
+
 def _skill_dir_roots(container_base: str) -> Iterator[tuple[Path, str]]:
     """Yield ``(host_dir, container_root)`` for every existing skills directory.
 
@@ -195,6 +203,19 @@ def _walk_skill_tree(root: Path) -> Iterator[tuple[Path, list[Path]]]:
         dirnames[:] = sorted(d for d in dirnames if d not in EXCLUDED_SKILL_DIRS)
         base = Path(dirpath)
         yield base, [f for f in (base / n for n in filenames) if not f.is_symlink() and f.is_file()]
+
+
+def ssh_skill_execution_dir(skill_dir: Path) -> str | None:
+    """Resolve a host skill directory to the current profile's SSH copy."""
+    if _terminal_backend() != "ssh":
+        return None
+    for host_root, remote_root in _skill_dir_roots(ssh_profile_sync_base()):
+        try:
+            relative = skill_dir.relative_to(host_root)
+        except ValueError:
+            continue
+        return posixpath.join(remote_root, relative.as_posix())
+    return None
 
 
 def get_skills_directory_mount(container_base: str = "/root/.hermes") -> list[dict[str, str]]:
@@ -370,7 +391,9 @@ def to_agent_visible_cache_path(host_path: str, container_base: str = "/root/.he
     (#76577 gap).
     """
     backend = _terminal_backend()
-    if backend in _HOME_RELATIVE_BACKENDS:
+    if backend == "ssh":
+        container_base = ssh_profile_sync_base()
+    elif backend in _HOME_RELATIVE_BACKENDS:
         container_base = "~/.hermes"
     elif backend not in ("docker", "modal"):
         try:
