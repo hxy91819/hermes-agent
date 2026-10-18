@@ -13,3 +13,5 @@ fix/cron-reference-parity fork-only # product adaptation: missing remote referen
 fix/cron-model-binding pr-open https://github.com/NousResearch/hermes-agent/pull/141155 # upstream defect: retain named model route and reject migrated credential endpoints
 fix/profile-stop-shared-gateway pr-open https://github.com/NousResearch/hermes-agent/pull/141203 # upstream defect: park a satellite without terminating the shared host
 fix/session-repair fork-only # upstream defect: return failure when database repair is refused
+
+fix/session-repair needs-feedback # report failed database repair through a nonzero CLI exit; no upstream PR yet
