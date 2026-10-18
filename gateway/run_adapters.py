@@ -1012,7 +1012,7 @@ class GatewayAdapterLifecycleMixin:
                 transient_failed.add(profile_name)
             else:
                 self._served_profile_signatures[profile_name] = scan_signature
-        self._record_served_profiles(active, profile_homes)
+        self._record_served_profiles(active, profile_homes, initialization_failed=transient_failed)
         # ``_note_served_profiles`` fills a missing signature with the current one; that refill
         # would park a transiently-failed profile before the first watcher tick can retry it.
         for profile_name in transient_failed:
@@ -1043,7 +1043,7 @@ class GatewayAdapterLifecycleMixin:
                     claimed[retry_claim] = active
         return claimed
 
-    def _record_served_profiles(self, active: str, profile_homes) -> None:
+    def _record_served_profiles(self, active: str, profile_homes, *, initialization_failed=None) -> None:
         """Record the served set (eligible for routing/HTTP prefixes/cron/runtime scope — broader
         than "has a connected adapter") for `hermes status`; seed per-profile PairingStores."""
         with _log_suppressed(logging.DEBUG, "could not record served_profiles", exc_info=True):
@@ -1056,7 +1056,12 @@ class GatewayAdapterLifecycleMixin:
                     self.pairing_stores[name] = (
                         self.pairing_store if name == active else PairingStore(profile=name)
                     )
-            publish_runtime_status(served_profiles=served)
+            fields = {"served_profiles": served}
+            if initialization_failed is not None:
+                # Routing membership alone does not mean adapter initialization succeeded.
+                # Publish only profile names: exception text may contain credentials.
+                fields["initialization_failed_profiles"] = sorted(initialization_failed)
+            publish_runtime_status(**fields)
             # The host record is what a second `gateway run` reads to decide attach-vs-start; keep
             # its served set in step with the live one (it is republished, never re-claimed).
             from gateway.host_rendezvous import ROLE_GATEWAY, owns_host_lock, publish_record

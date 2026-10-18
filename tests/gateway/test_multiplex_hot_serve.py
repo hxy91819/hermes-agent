@@ -546,12 +546,16 @@ async def test_transient_secret_hydrate_failure_retries_through_real_start_path(
         assert connected == []
         assert "gamma" not in runner._served_profile_signatures
         assert _served_record(home) == ["default", "gamma"]
+        from gateway.status import read_runtime_status
+        assert read_runtime_status(home / "gateway_state.json").get("initialization_failed_profiles") == ["gamma"]
 
         result = await runner.reconcile_served_profiles()
         assert result["rescanned"] == ["gamma"]
         assert connected == [Platform.DISCORD]
         assert runner._profile_adapters["gamma"][Platform.DISCORD].platform == Platform.DISCORD
         assert runner._served_profile_signatures["gamma"] == profile_serve_signature(gamma_dir)
+        flush_runtime_status()
+        assert read_runtime_status(home / "gateway_state.json").get("initialization_failed_profiles") == []
 
 
 @pytest.mark.asyncio

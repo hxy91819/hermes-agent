@@ -240,7 +240,7 @@ class GatewayProfileReconcileMixin:
             await self._unserve_profile(name, current.pop(name))
             result["removed"].append(name)
             added = [n for n in added if n != name]
-        self._record_served_profiles(active, list(current.items()))
+        self._record_served_profiles(active, list(current.items()), initialization_failed=transient_failed)
         # ``_note_served_profiles`` fills a missing signature with the current one; that refill
         # would park a transiently-failed profile exactly like the config-error case above.
         for name in transient_failed:
