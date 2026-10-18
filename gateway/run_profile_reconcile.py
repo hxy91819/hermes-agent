@@ -264,7 +264,7 @@ class GatewayProfileReconcileMixin:
             unpark_profile(self, name)
             current[name] = live[name]
         claimed = self._live_resource_claims(active)
-        transient_failed = set()
+        transient_failed = set(getattr(self, "_initialization_failed_profiles", ()))
         config_parked = set()
         for name in added + changed:
             # Only acknowledge the configuration observed before connecting;
@@ -290,6 +290,7 @@ class GatewayProfileReconcileMixin:
                 # unacknowledged so the next reconcile retries the connect.
                 transient_failed.add(name)
             else:
+                transient_failed.discard(name)
                 sigs[name] = scan_signature
             if name in added:
                 logger.info("[MULTIPLEX] Now serving profile '%s' (%s adapter(s) connected; %s)", name, connected, reason)

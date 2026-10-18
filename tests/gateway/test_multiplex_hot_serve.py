@@ -579,3 +579,49 @@ async def test_hot_added_profile_cannot_double_claim_a_live_secondary_token(tmp_
         await runner.reconcile_served_profiles()
     fp = GatewayRunner._adapter_credential_fingerprint(_Adapter("shared"))
     assert seen_claims["dupe"].get((Platform.DISCORD, fp)) == "alpha"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("removal", ["unserve", "delete"])
+async def test_failed_profile_survives_other_start_and_clears_on_removal(tmp_path, monkeypatch, removal):
+    from gateway.run_profile_reconcile import serve_profile_verb, unserve_profile_verb
+    from gateway.status import read_runtime_status
+    from hermes_constants import mark_named_profile_deleted
+    runner, home = _runner(tmp_path, monkeypatch)
+    bad_home = _mkprofile(home, "bad")
+    original = runner._start_one_profile_adapters
+    attempts = []
+
+    async def failing(name, profile_home, claimed):
+        attempts.append(name)
+        if name == "bad":
+            raise OSError("temporary initialization failure")
+        return await original(name, profile_home, claimed)
+
+    runner._start_one_profile_adapters = failing
+    def failures():
+        _served_record(home)  # flush asynchronous status publication
+        return read_runtime_status(home / "gateway_state.json")["initialization_failed_profiles"]
+
+    with patch("hermes_cli.profiles.get_active_profile_name", return_value="default"):
+        await runner._start_secondary_profile_adapters()
+        assert failures() == ["bad"]
+        _mkprofile(home, "good")
+        answer = await asyncio.to_thread(serve_profile_verb(runner), {"name": "good"})
+        assert answer["served"] == "good"
+        assert failures() == ["bad"]
+        assert "bad" not in runner._served_profile_signatures
+        await runner.reconcile_served_profiles()
+        assert attempts.count("bad") == 2
+        assert failures() == ["bad"]
+        if removal == "unserve":
+            (bad_home / "gateway.parked").touch()
+            answer = await asyncio.to_thread(unserve_profile_verb(runner), {"name": "bad"})
+            assert answer["unserved"] == "bad"
+        else:
+            mark_named_profile_deleted(bad_home)
+            await runner.reconcile_served_profiles()
+        assert failures() == []
+        await runner.reconcile_served_profiles()
+        assert failures() == []
+        assert _served_record(home) == ["default", "good"]
