@@ -1,0 +1,14 @@
+# Branch, upstream status, optional link; classification and intent in comments.
+base v0.22.1
+fork-tooling internal # fork maintenance and Ubuntu x86_64 release tooling
+feature/image-install-compat fork-only # product adaptation: prebuilt package and legacy image installer contract
+feature/remote-lifecycle-scan needs-feedback # design extension: remote execution namespace for guard reads
+feature/ssh-cron needs-feedback # design extension: SSH script cron; stacked on feature/remote-lifecycle-scan
+feature/shared-ssh-desktop needs-feedback # design extension: multiple profiles sharing an SSH desktop host
+fix/background-stop pr-open https://github.com/NousResearch/hermes-agent/pull/138977 # upstream defect: stop the actual remote process tree
+fix/ssh-socket-path pr-open https://github.com/NousResearch/hermes-agent/pull/138978 # upstream defect: bound every ControlMaster listener path
+fix/remote-skill-ownership fork-only # product adaptation: host-owned skills under remote terminal backends
+fix/browser-workbench-loopback fork-only # product adaptation: opt-in workbench loopback previews
+fix/cron-reference-parity fork-only # product adaptation: missing remote references remain non-scripts; stacked on feature/ssh-cron
+fix/cron-model-binding pr-open https://github.com/NousResearch/hermes-agent/pull/141155 # upstream defect: retain named model route and reject migrated credential endpoints
+fix/profile-stop-shared-gateway pr-open https://github.com/NousResearch/hermes-agent/pull/141203 # upstream defect: park a satellite without terminating the shared host
