@@ -12,6 +12,9 @@ import tempfile
 from pathlib import Path
 from typing import Iterable
 
+from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
+from tools.credential_files import ssh_profile_sync_base
+
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
@@ -137,13 +140,17 @@ class SSHEnvironment(BaseEnvironment):
             return
         self._remote_home_detected = False
         self._remote_home = self._detect_remote_home()
+        self._hermes_home = get_hermes_home()
+        self._sync_base = ssh_profile_sync_base(self._remote_home, self._hermes_home)
         self._sync_manager = None
         if sync_files:
             self._ensure_remote_dirs()
             self._sync_manager = FileSyncManager(
-                get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                get_files_fn=self._profile_sync_files,
                 upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
-                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
+                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download,
+                upload_only_roots=tuple(f"{self._sync_base}/{name}" for name in
+                                        ("skills", "external_skills", "project_skills")))
             self._sync_manager.sync(force=True)
         self.init_session()
 
@@ -219,9 +226,23 @@ class SSHEnvironment(BaseEnvironment):
                 return result.stdout.strip()
         return "/root" if self.user == "root" else f"/home/{self.user}"
 
+    def agent_visible_cache_base(self) -> str:
+        return self._sync_base
+
+    def _additional_profile_scoped_passthrough_names(self) -> Iterable[str]:
+        return ("HERMES_HOME",)
+
+    def _profile_sync_files(self) -> list[tuple[str, str]]:
+        # Eviction/cleanup may run after the caller's profile context has ended.
+        token = set_hermes_home_override(self._hermes_home)
+        try:
+            return iter_sync_files(self._sync_base)
+        finally:
+            reset_hermes_home_override(token)
+
     def _ensure_remote_dirs(self) -> None:
         """Create base ~/.hermes directory tree on remote in one SSH call."""
-        base = f"{self._remote_home}/.hermes"
+        base = self._sync_base
         self._run_ssh(quoted_mkdir_command([base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]),
                       timeout=10)
 
@@ -239,7 +260,7 @@ class SSHEnvironment(BaseEnvironment):
         connection to remote ``tar x``, after a single batched ``mkdir -p``."""
         if not files:
             return
-        base = f"{self._remote_home}/.hermes"
+        base = self._sync_base
         parents = unique_parent_dirs(files)
         if parents:
             self._run_ssh_checked(quoted_mkdir_command(parents), 30, "remote mkdir failed",
@@ -306,7 +327,7 @@ class SSHEnvironment(BaseEnvironment):
         """Download remote .hermes/ as a tar archive."""
         # Tar from / with the full path so archive entries keep absolute paths
         # (home/user/.hermes/skills/f.py), matching _pushed_hashes keys.
-        rel_base = f"{self._remote_home}/.hermes".lstrip("/")
+        rel_base = self._sync_base.lstrip("/")
         # Live sockets inside .hermes (gateway.sock and friends) cannot be archived: tar prints
         # "socket ignored" and some builds exit 2, which failed every sync-back and left a
         # multi-GB temp tar behind on each retry. Exclude them up front.
@@ -342,6 +363,8 @@ class SSHEnvironment(BaseEnvironment):
         remote sshd must ``AcceptEnv`` them (#14091). Profile-scoped names missing from the active
         scope are unset remotely so a shared host cannot serve another profile's value."""
         values, unset_names = resolve_passthrough_env(hermes_env_loader=_load_hermes_env_vars)
+        if hasattr(self, "_sync_base"):
+            cmd_string = f"export HERMES_HOME={shlex.quote(self._sync_base)}; " + cmd_string
         cmd = self._build_ssh_command(send_env=values) + bash_argv(shlex.quote(prepend_unset(cmd_string, unset_names)), login)
         client_env = client_env_with(values)
         return _popen_bash(cmd, stdin_data, env=client_env) if client_env is not None else _popen_bash(cmd, stdin_data)
@@ -349,7 +372,7 @@ class SSHEnvironment(BaseEnvironment):
     def cleanup(self):
         if self._sync_manager:
             logger.info("SSH: syncing files from sandbox...")
-            self._sync_manager.sync_back()
+            self._sync_manager.sync_back(hermes_home=self._hermes_home)
         for socket in self._control_sockets():
             if not socket.exists():
                 continue
