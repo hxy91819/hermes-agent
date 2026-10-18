@@ -1,8 +1,13 @@
 """Named-profile lifecycle inside the host gateway, never a service-manager action."""
 from __future__ import annotations
 
+import logging
+
 from hermes_constants import get_hermes_home, get_default_hermes_root
 from hermes_cli.profiles import parked_marker_path, profile_is_parked, profile_is_standalone, profiles_to_serve
+
+
+logger = logging.getLogger(__name__)
 
 
 def _confirmed(answer, key, name):
@@ -113,3 +118,57 @@ def print_parked_status() -> bool:
             for profile in parked:
                 print(f"Profile '{profile}': parked (hermes -p {profile} gateway start)")
     return False
+
+
+def owned_gateway_pid() -> int | None:
+    """Return only a freshly confirmed process owned by this profile.
+
+    A missing (or cached missing) host is not ownership evidence. Accept a fresh
+    host identity matching PID/home, otherwise require pinned process launch evidence:
+    a satellite's runtime status legitimately carries another home's shared PID.
+    """
+    from gateway import host_attach
+    from gateway.status import get_running_pid, _get_process_hermes_home, _same_hermes_home
+    from hermes_cli.dashboard_procs import _hermes_home_for_pid
+
+    try:
+        pid = get_running_pid()
+        if pid is None:
+            return None
+        host_attach.invalidate_host_gateway_cache()
+        owner = host_attach.host_gateway()
+        home = _get_process_hermes_home()
+        if owner is not None and owner.pid == pid:
+            if not _same_hermes_home(owner.home, home):
+                return None
+            # host_gateway refreshed liveness/incarnation and matched the control
+            # socket's PID/home. A bare foreground launch needs no argv profile.
+            if owner.served_known:
+                return pid if get_running_pid() == pid else None
+        process_home = _hermes_home_for_pid(pid, require_launch_identity=True)
+        if process_home is None or not _same_hermes_home(process_home, home):
+            return None
+        # The runtime may have switched owners while the OS/control probes ran.
+        return pid if get_running_pid() == pid else None
+    except Exception:
+        # An inaccessible rendezvous or process is never permission to kill it.
+        logger.debug("Could not prove gateway process ownership", exc_info=True)
+        return None
+
+
+def report_profile_stop_failure() -> None:
+    """Do not report absence when a live PID was refused or the probe failed."""
+    from gateway.status import get_running_pid
+    from hermes_cli import gateway as gw
+
+    try:
+        absent = get_running_pid() is None and not gw.find_gateway_pids()
+    except Exception:
+        logger.debug("Could not confirm gateway absence after stop", exc_info=True)
+        absent = False
+    if absent:
+        print("✗ No gateway running for this profile")
+        return
+    gw.print_error("Gateway stop was not confirmed; a gateway may still be running. "
+                   "Check gateway status and process ownership.")
+    raise SystemExit(1)
