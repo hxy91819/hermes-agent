@@ -4,8 +4,10 @@ Split out of ``tools/browser_tool.py``. Facade-owned state is read through ``_bt
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from typing import Callable, Optional
+from urllib.parse import urlsplit
 
 from agent.browser_provider import BrowserProvider as CloudBrowserProvider
 from agent.browser_registry import get_provider as _registry_get_browser_provider
@@ -268,3 +270,26 @@ def _resolve_allow_private_urls() -> bool:
     """Read the browser private-URL toggle from the active config scope."""
     _bt = _origin()
     return _bt._browser_cfg("allow_private_urls", False, lambda v: is_truthy_value(v, default=False), "allow_private_urls from config")
+
+
+def _loopback_url_allowed(url: str) -> bool:
+    """Opt-in for a browser colocated with the workbench, not arbitrary private DNS.
+
+    A CDP endpoint being loopback does not establish where Chrome runs. The
+    deployment must opt in explicitly; keep cloud and off-host CDP defaults.
+    """
+    try:
+        parsed = urlsplit(url)
+        host = parsed.hostname
+        if parsed.scheme not in ("http", "https") or not host or "\\" in parsed.netloc:
+            return False
+        if host != "localhost":
+            address = ipaddress.ip_address(host)
+            if not (address.version == 4 and address.is_loopback) and address != ipaddress.IPv6Address("::1"):
+                return False
+    except ValueError:
+        return False
+    return _origin()._browser_cfg(
+        "allow_loopback_urls", False,
+        lambda v: is_truthy_value(v, default=False), "allow_loopback_urls from config",
+    )
