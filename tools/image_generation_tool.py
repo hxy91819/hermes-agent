@@ -324,6 +324,9 @@ def _agent_cache_base_for_env(env: Any) -> str | None:
             return "/root/.hermes"
     from tools.terminal_scope import terminal_env
     backend = (terminal_env("TERMINAL_ENV") or "local").strip().lower()
+    if backend == "ssh":
+        from tools.credential_files import ssh_profile_sync_base
+        return ssh_profile_sync_base()
     return _CACHE_BASE_BY_BACKEND.get(backend)
 
 
