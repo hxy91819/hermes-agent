@@ -1,9 +1,12 @@
 """Shared SSH workbenches must not roll one profile's skills back from another."""
 import io
+import json
 import shutil
 import tarfile
 from contextlib import contextmanager
 from pathlib import Path
+
+import pytest
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
 from tools.environments.ssh import SSHEnvironment
@@ -18,15 +21,22 @@ def profile(home):
         reset_hermes_home_override(token)
 
 
-def test_clone_old_skill_cannot_replace_upgraded_profile(tmp_path, monkeypatch):
+@pytest.mark.parametrize("callback_profile", ["A", "B"])
+def test_clone_old_skill_cannot_replace_upgraded_profile(tmp_path, monkeypatch, callback_profile):
+    from tools.skill_manager_tool import skill_manage
+
+    monkeypatch.setenv('TERMINAL_ENV', 'ssh')
     remote = {}
+    uploads = {}
     monkeypatch.setattr(SSHEnvironment, '_establish_connection', lambda self: None)
     monkeypatch.setattr(SSHEnvironment, '_detect_remote_home', lambda self: '/workbench')
     monkeypatch.setattr(SSHEnvironment, '_ensure_remote_dirs', lambda self: None)
     monkeypatch.setattr(SSHEnvironment, 'init_session', lambda self: None)
     monkeypatch.setattr(SSHEnvironment, 'cleanup', lambda self: None)
-    monkeypatch.setattr(SSHEnvironment, '_ssh_bulk_upload',
-                        lambda self, files: remote.update({dst: Path(src).read_bytes() for src, dst in files}))
+    def upload(self, files):
+        uploads.setdefault(self, {}).update({dst: Path(src).read_bytes() for src, dst in files})
+        remote.update({dst: Path(src).read_bytes() for src, dst in files})
+    monkeypatch.setattr(SSHEnvironment, '_ssh_bulk_upload', upload)
     monkeypatch.setattr(SSHEnvironment, '_ssh_delete', lambda self, paths: [remote.pop(p, None) for p in paths])
 
     def download(self, dest):
@@ -40,18 +50,44 @@ def test_clone_old_skill_cannot_replace_upgraded_profile(tmp_path, monkeypatch):
     skill = Path('skills/report/SKILL.md')
     (a / skill).parent.mkdir(parents=True)
     (a / skill).write_text('---\nname: report\ndescription: report\n---\nV1')
+    cache = Path('cache/images/result.txt')
+    (a / cache).parent.mkdir(parents=True)
+    (a / cache).write_text('original cache')
     shutil.copytree(a, b)
     with profile(a):
         env_a = SSHEnvironment('workbench', 'user')
-        (a / skill).write_text('---\nname: report\ndescription: report\n---\nV2 upgraded')
+        result = json.loads(skill_manage(
+            action='edit', name='report',
+            content='---\nname: report\ndescription: report\n---\nV2 upgraded'))
+        assert result['success'] is True
+        assert (a / skill).read_text().endswith('V2 upgraded')
+        assert (b / skill).read_text().endswith('V1')
         env_a._sync_manager.sync(force=True)
     with profile(b):
-        SSHEnvironment('workbench', 'user')
-    # Deferred cleanup runs with a different profile still selected.
-    with profile(b):
+        env_b = SSHEnvironment('workbench', 'user')
+    a_skill_remote = next(dst for dst in uploads[env_a] if dst.endswith('/skills/report/SKILL.md'))
+    b_skill_remote = next(dst for dst in uploads[env_b] if dst.endswith('/skills/report/SKILL.md'))
+    a_cache_remote = next(dst for dst in uploads[env_a] if dst.endswith('/cache/images/result.txt'))
+    b_cache_remote = next(dst for dst in uploads[env_b] if dst.endswith('/cache/images/result.txt'))
+    remote[a_cache_remote] = b'A remote result'
+    # Cover both ordinary A cleanup and A's delayed callback after selecting B.
+    with profile(a if callback_profile == 'A' else b):
         env_a._sync_manager.sync_back(hermes_home=a)
     assert (a / skill).read_text().endswith('V2 upgraded')
     assert (b / skill).read_text().endswith('V1')
+    assert a_skill_remote != b_skill_remote
+    assert remote[a_skill_remote].endswith(b'V2 upgraded')
+    assert remote[b_skill_remote].endswith(b'V1')
+    assert a_cache_remote != b_cache_remote
+    assert (a / cache).read_text() == 'A remote result'
+    assert (b / cache).read_text() == 'original cache'
+    # Delayed uploads must also enumerate A's files, not the active B profile.
+    (a / skill).write_text((a / skill).read_text().replace('V2 upgraded', 'A delayed edit: V2 upgraded'))
+    with profile(b):
+        env_a._sync_manager.sync(force=True)
+    assert uploads[env_a][a_skill_remote].endswith(b'A delayed edit: V2 upgraded')
+    assert b_skill_remote not in uploads[env_a]
+    assert remote[a_skill_remote].endswith(b'V2 upgraded')
 
     # Fresh environments (including after a workbench reset) seed from host state.
     remote.clear()
@@ -65,15 +101,15 @@ def test_clone_old_skill_cannot_replace_upgraded_profile(tmp_path, monkeypatch):
     for path in list(remote):
         if path.endswith('/SKILL.md'):
             remote[path] = b'V1 stale terminal edit'
-    restarted._sync_manager.sync_back(hermes_home=a)
-    assert (a / skill).read_text().endswith('V2 upgraded')
-    (a / skill).unlink()
-    restarted._sync_manager.sync_back(hermes_home=a)
+    with profile(a):
+        restarted._sync_manager.sync_back(hermes_home=a)
+        assert (a / skill).read_text().endswith('V2 upgraded')
+        (a / skill).unlink()
+        restarted._sync_manager.sync_back(hermes_home=a)
     assert not (a / skill).exists()
 
 
 def test_ssh_scripts_and_images_resolve_the_synced_profile(tmp_path, monkeypatch):
-    import json
     import shlex
     import subprocess
     import sys
