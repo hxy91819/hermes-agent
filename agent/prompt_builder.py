@@ -1095,16 +1095,29 @@ def _bot_screen_hint() -> str:
 
 def _remote_backend_hint(backend: str) -> str:
     """Backend-only block for remote/sandbox backends (host info deliberately suppressed)."""
+    skills = (
+        "\nHermes profile state (configuration, model selection, and skills) lives on the Hermes host. "
+        "Editing config files or running `hermes config` in the execution environment does not "
+        "configure the running host agent. Use an available host management tool or the product's "
+        "settings UI for those changes; do not claim success from a remote file edit. "
+        "For skills, when available, `skills_list`, `skill_view`, and "
+        "`skill_manage` read or modify that store, independently of the terminal backend. "
+        "Unpacking a package with terminal/file tools does not install it there. For a text skill "
+        "package, inspect it in the execution environment, then use `skill_manage` create and "
+        "write_file operations to install its SKILL.md and supporting files. Verify installation "
+        "with `skills_list` and `skill_view`. Run scripts and install their runtime dependencies "
+        "in the execution environment; host skill paths are not remote execution paths."
+    )
     lead = (f"Terminal backend: {backend}. Your `terminal`, `read_file`, `write_file`, `patch`, and "
             f"`search_files` tools all operate inside ")
     probe = _probe_remote_backend(backend)
     if probe:
         return lead + (
             f"this {backend} environment — NOT on the machine where Hermes itself is running. The host OS, "
-            f"home, and cwd of the Hermes process are irrelevant; only the following backend state matters:\n{probe}\n"
+            f"home, and cwd do not describe your terminal; its backend state is:\n{probe}\n"
             f"  The sandbox's current user, $HOME, and working directory are not listed here; if you need them, "
             f"probe directly with a terminal call like `whoami && pwd`."
-        )
+        ) + skills
     description = (
         _BACKEND_FALLBACK_DESCRIPTIONS.get(backend)
         or _plugin_backend_attr(backend, "env_description")
@@ -1114,7 +1127,7 @@ def _remote_backend_hint(backend: str) -> str:
         f"{description} — NOT on the machine where Hermes itself runs. The backend probe didn't respond at "
         f"prompt-build time, so the sandbox's OS, current user, $HOME, and working directory are unknown from here. "
         f"If you need them, probe directly with a terminal call like `uname -a && whoami && pwd`."
-    )
+    ) + skills
 
 
 def _config_readonly(what: str) -> dict:
