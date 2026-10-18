@@ -657,6 +657,10 @@ def skill_view(
             "success": True, "name": skill_name, "description": frontmatter.get("description", ""),
             "tags": tags, "related_skills": related_skills, "content": rendered_content,
             "path": rel_path, "skill_dir": str(skill_dir) if skill_dir else None,
+            "path_hint": "skill_dir is on the Hermes host. Use skill_view for supporting files and "
+                         "skill_manage for installation or changes. With a remote terminal, locate "
+                         "or copy required files into the execution environment before running them; "
+                         "this host path is not a remote execution path.",
             "linked_files": linked_files if linked_files else None,
             "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'" if linked_files else None,
             **readiness,
