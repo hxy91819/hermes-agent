@@ -147,8 +147,8 @@ def build_identify_payload() -> dict[str, Any]:
 
 def build_status_payload() -> dict[str, Any]:
     """Default ``status`` answer — current runtime status, answered live."""
-    from gateway.status import read_runtime_status
-    return {**(read_runtime_status() or {}), "protocol": CONTROL_PROTOCOL_VERSION,
+    from gateway.status import current_runtime_status
+    return {**(current_runtime_status() or {}), "protocol": CONTROL_PROTOCOL_VERSION,
             "answered_at": time.time(), "answering_pid": os.getpid()}
 
 

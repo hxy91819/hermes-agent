@@ -1,3 +1,4 @@
+# health: allow FILE_LINES -- Live IPC snapshots must share the canonical writer lock to avoid stale rescan success.
 """Gateway runtime status helpers: PID/lock/marker files under ``{HERMES_HOME}`` (one set per
 home/profile) that tell whether the gateway daemon is running."""
 
@@ -1089,7 +1090,8 @@ def _prepare_runtime_status_update(
     active_agents: Any = _UNSET, active_work: Any = _UNSET, platform: Any = _UNSET, platform_state: Any = _UNSET,
     error_code: Any = _UNSET, error_message: Any = _UNSET, needs_attention: Any = _UNSET,
     retrying_since: Any = _UNSET, served_profiles: Any = _UNSET, session_store: Any = _UNSET,
-    parked_profiles: Any = _UNSET, multiplex_standalone_reason: Any = _UNSET,
+    parked_profiles: Any = _UNSET, initialization_failed_profiles: Any = _UNSET,
+    multiplex_standalone_reason: Any = _UNSET,
     platform_metrics: Any = _UNSET,
     ingress_url: Any = _UNSET, listener_base: Any = _UNSET, clear_profile_platforms: bool = False,
     drop_profile_platforms: Optional[str] = None,
@@ -1127,6 +1129,7 @@ def _prepare_runtime_status_update(
             ("active_agents", active_agents, parse_active_agents),
             ("active_work", active_work, lambda v: list(v) if v else None),
             ("served_profiles", served_profiles, lambda v: list(v or [])),
+            ("initialization_failed_profiles", initialization_failed_profiles, lambda v: sorted(set(v or []))),
             # Profiles the multiplexer could not serve, name -> reason; clients fail fast on them.
             ("parked_profiles", parked_profiles, lambda v: {str(k): str(r) for k, r in dict(v or {}).items()}),
             ("multiplex_standalone_reason", multiplex_standalone_reason, lambda v: str(v) if v else None),
@@ -1194,6 +1197,16 @@ def publish_runtime_status(**fields: Any) -> int:
         generation = _get_runtime_status_writer().submit(path, payload)
     _emit_runtime_status_transition(previous_payload, payload)
     return generation
+
+
+def current_runtime_status() -> Optional[dict[str, Any]]:
+    """Live control replies must not lag behind an acknowledged profile rescan."""
+    with _runtime_status_state_lock:
+        if (_runtime_status_state_path == _get_runtime_status_path()
+                and isinstance(_runtime_status_state, dict)
+                and _runtime_status_state.get("pid") == os.getpid()):
+            return copy.deepcopy(_runtime_status_state)
+    return read_runtime_status()
 
 
 def read_runtime_status(path: Optional[Path] = None) -> Optional[dict[str, Any]]:
