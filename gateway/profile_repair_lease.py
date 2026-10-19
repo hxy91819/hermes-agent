@@ -4,7 +4,12 @@ Unlike gateway.parked, this state is not a user's persistent stop request. The
 normal profile watcher retires it after the caller dies and the repair lock is free.
 """
 import json
+import sqlite3
 from pathlib import Path
+
+
+class ProfileRepairInProgress(sqlite3.OperationalError):
+    """A temporary admission refusal, not an unhealthy session database."""
 
 
 def lease_path(home):
@@ -81,10 +86,9 @@ def end_lease(home, token):
 def refuse_new_session_store(db_path):
     """A temporary stop fences REST/background opens as well as interactive RPCs."""
     import os
-    import sqlite3
     if Path(db_path).name != 'state.db':
         return
     home = Path(db_path).parent
     lease = _read(home)
     if lease is not None and lease.get('pid') != os.getpid() and lease_active(home):
-        raise sqlite3.OperationalError('Profile session repair is in progress')
+        raise ProfileRepairInProgress('Profile session repair is in progress')

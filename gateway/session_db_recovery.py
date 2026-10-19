@@ -14,6 +14,13 @@ _INITIAL_RETRY_DELAY_SECONDS = 1.0
 _MAX_RETRY_DELAY_SECONDS = 60.0
 
 
+def unavailable_borrowed_store(path: Path) -> None:
+    """Preserve a lease refusal across the runner's borrowed-handle cache."""
+    from gateway.profile_repair_lease import refuse_new_session_store
+    refuse_new_session_store(path)
+    raise RuntimeError("SessionStore SQLite handle unavailable")
+
+
 @dataclass
 class _Unavailable:
     failures: int = 0
@@ -112,9 +119,20 @@ class RecoverableHandleCache:
         try:
             handle = opener()
         except Exception as exc:
+            from gateway.profile_repair_lease import ProfileRepairInProgress
+            maintenance = isinstance(exc, ProfileRepairInProgress)
             uncacheable = non_cacheable is not None and non_cacheable(exc)
             with self.lock:
                 stale = self._is_stale(path, unavailable, generation)
+                if maintenance:
+                    # A reader can race the retirement of a Profile's handles.
+                    # The lease fences new writers; it must not poison the next
+                    # open after repair with an ordinary database retry delay.
+                    if not stale:
+                        self._unavailable.pop(path, None)
+                    if raise_on_error:
+                        raise
+                    return None
                 if uncacheable:
                     if not stale:
                         self._unavailable.pop(path, None)
