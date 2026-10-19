@@ -942,6 +942,8 @@ class AIAgent(
         blocks the rest."""
         session_messages = getattr(self, "_session_messages", None)
         _quietly(self.shutdown_memory_provider, session_messages if isinstance(session_messages, list) else None)
+        if checkpoint := getattr(self, "_cleanup_checkpoint", None):
+            checkpoint()
         self._close_task_resources(getattr(self, "session_id", None) or "")
         self._close_active_children(soft=False)
         _quietly(self._drop_shared_client, lambda c: self._close_openai_client(c, reason="agent_close", shared=True))
@@ -962,6 +964,8 @@ class AIAgent(
             _quietly(forget_message_token_memo, (session_messages, getattr(self, "_cached_system_prompt", None),
                                                  getattr(self, "_cached_system_prompt_static", None)))
         _quietly(self._trim_process_memory)
+        if checkpoint := getattr(self, "_cleanup_checkpoint", None):
+            checkpoint()
         _quietly(self._finalize_owned_session_row)
 
     # -- close()/release_clients() phases -------------------------------------------------------------

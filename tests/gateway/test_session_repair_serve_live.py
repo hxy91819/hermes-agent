@@ -6,6 +6,7 @@ import sqlite3
 import subprocess
 import sys
 import queue
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 
@@ -45,11 +46,27 @@ async def dashboard_turn(url, profile, sid=None):
         return await turn(ws, profile, sid)
 
 
-async def held_dashboard_session(url, ready):
+async def held_dashboard_session(url, ready, outcome="success", home=None):
     # Keep the actual client connected: disconnected sessions can be reaped
     # before repair, hiding the independent backend's retained AIAgent writer.
     async with connect(url) as ws:
         stored_sid = await turn(ws, 'boot')
+        if outcome == 'busy-build':
+            (home / 'arm-build').touch()
+            await ws.send(json.dumps({'jsonrpc': '2.0', 'id': 'busy-create', 'method': 'session.create',
+                                      'params': {'profile': 'boot'}}))
+        elif outcome == 'busy-turn':
+            await ws.send(json.dumps({'jsonrpc': '2.0', 'id': 'busy-resume', 'method': 'session.resume',
+                                      'params': {'session_id': stored_sid, 'profile': 'boot'}}))
+            async with asyncio.timeout(30):
+                while True:
+                    msg = json.loads(await ws.recv())
+                    if msg.get('id') == 'busy-resume':
+                        assert 'result' in msg, msg
+                        runtime_sid = msg['result']['session_id']
+                        break
+            await ws.send(json.dumps({'jsonrpc': '2.0', 'id': 'busy-turn', 'method': 'prompt.submit',
+                                      'params': {'session_id': runtime_sid, 'text': 'WS_SHARED BLOCK_FIFO'}}))
         ready.put(stored_sid)
         async with asyncio.timeout(90):
             while True:
@@ -60,23 +77,46 @@ async def held_dashboard_session(url, ready):
                         return payload
 
 
-@pytest.mark.parametrize('outcome', ['success', 'exception', 'killed', 'unserved', 'failed-startup'])
-def test_repair_with_dashboard_writer(mux, tmp_path, outcome):
+@pytest.mark.parametrize('outcome', ['success', 'exception', 'killed', 'unserved', 'failed-startup', 'busy-turn', 'busy-build'])
+def test_repair_with_dashboard_writer(mux, tmp_path, peer, outcome, action=None):
     gateway, desc = start_daemon(mux)
     backend = repair = None
     observer_pool = ThreadPoolExecutor(max_workers=1)
     log_path = tmp_path / 'serve.log'
+    peer.blocked, peer.release = threading.Event(), threading.Event()
     try:
         with log_path.open('w') as log:
-            backend = subprocess.Popen([sys.executable, '-c',
-                'from hermes_cli.web_server import start_server; start_server(port=0, headless=True, open_browser=False, ssh_session_token="loopback-repair-test")'],
+            # Gate the real deferred builder after it has acquired its SessionDB.
+            # Only the test backend is instrumented; gateway and repair CLI stay real.
+            backend_code = """
+from pathlib import Path
+from tests.waiting import wait_until
+from hermes_constants import get_hermes_home
+import tui_gateway.server as server
+native = server._make_agent
+def make_agent(*args, **kwargs):
+    home = Path(get_hermes_home())
+    if (home / 'arm-build').exists():
+        (home / 'arm-build').unlink()
+        (home / 'build-entered').touch()
+        wait_until((home / 'build-release').exists, timeout=60, what='release real agent build')
+    return native(*args, **kwargs)
+server._make_agent = make_agent
+from hermes_cli.web_server import start_server
+start_server(port=0, headless=True, open_browser=False, ssh_session_token="loopback-repair-test")
+"""
+            backend = subprocess.Popen([sys.executable, '-c', backend_code],
                 cwd=ROOT, env=mux['env'], stdout=log, stderr=subprocess.STDOUT)
         wait_until(lambda: 'HERMES_BACKEND_READY port=' in log_path.read_text(), timeout=60, what='dashboard ready')
         port = re.search(r'HERMES_BACKEND_READY port=(\d+)', log_path.read_text()).group(1)
         url = f'ws://127.0.0.1:{port}/api/ws?token=loopback-repair-test'
         ready = queue.Queue()
-        observed = observer_pool.submit(asyncio.run, held_dashboard_session(url, ready))
+        observed = observer_pool.submit(asyncio.run, held_dashboard_session(url, ready, outcome, mux["boot"]))
         sid = ready.get(timeout=60)
+        if outcome == 'busy-turn':
+            assert peer.blocked.wait(30), 'target must be inside the real model call'
+        elif outcome == 'busy-build':
+            wait_until((mux['boot'] / 'build-entered').exists, timeout=30, what='target building')
         other = asyncio.run(dashboard_turn(url, 'default'))
         with closing(sqlite3.connect(mux['boot'] / 'state.db', isolation_level=None)) as db:
             db.execute('PRAGMA writable_schema=ON')
@@ -112,17 +152,33 @@ main()
 """
         repair = subprocess.Popen([sys.executable, '-c', code, str(mux['boot']), outcome],
             cwd=ROOT, env=mux['env'], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        if outcome in ('busy-turn', 'busy-build'):
+            from gateway.profile_repair_lease import lease_active
+            wait_until(lambda: lease_active(mux['boot']), timeout=30, what='repair admitted during active work')
+            assert not (mux['boot'] / 'repair-ready').exists(), 'repair must not pass an active writer'
+            asyncio.run(dashboard_turn(url, 'default', other))
+            peer.release.set()
+            (mux['boot'] / 'build-release').touch()
         wait_until((mux['boot'] / 'repair-ready').exists, timeout=45, what='both writers drained')
         from hermes_state_holders import foreign_state_db_holders
         assert not foreign_state_db_holders(mux['boot'] / 'state.db')
         assert mux['boot'].resolve() not in served_homes(control(mux['root'], 'identify'))
         asyncio.run(dashboard_turn(url, 'default', other))
+        if action is not None:
+            cmd = ['sessions', 'repair'] if action == 'repair' else ['gateway', action]
+            result = subprocess.run([sys.executable, '-m', 'hermes_cli.main', '-p', 'boot', *cmd],
+                                    cwd=ROOT, env=mux['env'], capture_output=True, text=True, timeout=45, check=False)
+            assert result.returncode != 0, (result.stdout, result.stderr)
+            if action in ('stop', 'restart'):
+                assert 'repair maintenance' in result.stdout
+            assert (mux['boot'] / 'gateway.repair-lease.json').exists()
+            assert not (mux['boot'] / 'gateway.parked').exists()
         if outcome == 'killed':
             repair.kill()
         else:
             (mux['boot'] / 'repair-release').touch()
         stdout, stderr = repair.communicate(timeout=60)
-        if outcome in ('success', 'unserved', 'failed-startup'):
+        if outcome in ('success', 'unserved', 'failed-startup', 'busy-turn', 'busy-build'):
             assert repair.returncode == 0, stdout + stderr
         else:
             assert repair.returncode != 0
@@ -140,6 +196,8 @@ main()
         with closing(sqlite3.connect(mux['boot'] / 'state.db')) as db:
             assert db.execute('PRAGMA integrity_check').fetchone() == ('ok',)
     finally:
+        peer.release.set()
+        (mux['boot'] / 'build-release').touch()
         if repair is not None and repair.poll() is None:
             repair.kill()
             repair.wait(timeout=10)

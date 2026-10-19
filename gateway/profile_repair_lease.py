@@ -33,10 +33,10 @@ def _read(home):
         return None
 
 
-def lease_active(home):
+def lease_active(home, *, token=None):
     from gateway.status import _pid_exists, get_process_start_time
     lease = _read(home)
-    if lease is None:
+    if lease is None or (token is not None and lease['token'] != token):
         return False
     pid = lease['pid']
     if _pid_exists(pid) and get_process_start_time(pid) in (None, lease['start_time']):
