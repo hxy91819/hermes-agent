@@ -15,3 +15,4 @@ fix/profile-stop-shared-gateway pr-open https://github.com/NousResearch/hermes-a
 fix/session-repair fork-only # upstream defect: lease-fenced cross-process writer drain and repair failure exit; reject profile lifecycle verbs during repair; no upstream PR yet
 fix/profile-initialization-status fork-only # upstream defect: expose profile initialization failures in live status
 fix/browser-host-env fork-only # product adaptation: keep sandbox desktop paths out of host browser children; reuse a live remote Chromium only when its lock and listening socket belong to that desktop browser (misattach guard, not a security boundary)
+fix/native-ws-readiness fork-only # upstream defect: initialize native WS schemas off-loop before listener readiness; pending image validation
