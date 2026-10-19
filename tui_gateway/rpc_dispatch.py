@@ -31,7 +31,12 @@ def _handle_admitted_request(req: dict) -> dict | None:
             return _err(rid, 4000, problem)
     token = _current_rpc_method.set(method)
     try:
-        response = fn(rid, params)
+        from tui_gateway import server
+        from tui_gateway.profile_repair import admission
+        with admission(server, params) as allowed:
+            if not allowed:
+                return _err(rid, 4064, "Profile session repair is in progress; reconnect after repair")
+            response = fn(rid, params)
     except ProfileUnavailableError as exc:
         return _err(rid, 4064, str(exc))
     finally:

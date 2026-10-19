@@ -165,10 +165,13 @@ async def standalone_lifespan(app: "FastAPI"):
     # The desktop's onboarding due answer, worked out after that bootstrap and before it is asked.
     # Through the server: methods_* functions run with the server's globals (``bind_module``).
     tui_gateway.server.start_due_boot()
+    from tui_gateway.profile_repair import start as start_profile_repair
+    profile_repair_stop = start_profile_repair(tui_gateway.server)
 
     try:
         yield
     finally:
+        profile_repair_stop.set()
         try:
             tui_gateway.server.clear_tui_message_injector()
         except Exception:
