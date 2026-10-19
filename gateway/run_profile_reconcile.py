@@ -386,6 +386,8 @@ class GatewayProfileReconcileMixin:
                     # a maintenance caller probes this now-retired Profile's file.
                     import gc
                     await asyncio.to_thread(gc.collect)
+                    from hermes_state_dbfile import release_idle_header_probe
+                    await asyncio.to_thread(release_idle_header_probe, home / 'state.db')
                 with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
                     from plugins.memory import import_provider_module  # catalog plugin since it left core
                     import_provider_module("holographic", "store").MemoryStore.release_all_under(home)
@@ -426,11 +428,17 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
                 return {"error": "a non-launch profile name is required"}
             known = dict(runner._served_profile_homes)
             if not serve:
-                if name not in known:
+                home = known.get(name)
+                if home is None and params.get("repair_lease") is not None:
+                    # Failed initialization can leave a dashboard writer behind even
+                    # though this owner no longer publishes the satellite as served.
+                    home = dict(profiles_to_serve(True, include_parked=True)).get(name)
+                if home is None:
                     return {"error": f"profile '{name}' is not served"}
                 if params.get("repair_lease") is not None:
-                    begin_lease(known[name], params["repair_lease"])
-                await runner._unserve_profile(name, known.pop(name))
+                    begin_lease(home, params["repair_lease"])
+                await runner._unserve_profile(name, home)
+                known.pop(name, None)
                 runner._record_served_profiles(active, list(known.items()))
                 return {"unserved": name, "served_profiles": runner.served_profile_names()}
             installed = dict(profiles_to_serve(True, include_parked=True))
@@ -444,8 +452,9 @@ def _profile_lifecycle_verb(runner, *, serve: bool):
                 return {"error": f"profile '{name}' is parked (gateway.parked)"}
             if name in known:
                 return {"error": f"profile '{name}' is already served"}
-            known[name] = installed[name]
-            result = await runner._apply_profile_changes(known, [name], [], [], reason="control-socket")
+            # A candidate is not served until runtime construction succeeds.
+            result = await runner._apply_profile_changes(
+                known, [name], [], [], reason="control-socket", live={**known, name: installed[name]})
             if name not in result["served_profiles"]:
                 return {"error": f"profile '{name}' was removed or parked during startup"}
             return {"served": name, "served_profiles": result["served_profiles"]}
