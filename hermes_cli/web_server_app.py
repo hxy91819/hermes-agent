@@ -158,10 +158,13 @@ async def standalone_lifespan(app: "FastAPI"):
     from hermes_cli.free_tier_bootstrap import start_background_bootstrap
 
     start_background_bootstrap()
+    from tui_gateway.profile_repair import start as start_profile_repair
+    profile_repair_stop = start_profile_repair(tui_gateway.server)
 
     try:
         yield
     finally:
+        profile_repair_stop.set()
         try:
             tui_gateway.server.clear_tui_message_injector()
         except Exception:

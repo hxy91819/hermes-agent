@@ -65,7 +65,7 @@ def _prepare_connection_retirement():
 # every POSIX advisory lock this process holds on the file, dropping the writer's WAL-mode DMS
 # shared lock (see hermes_cli/sqlite_safe_read.py) so another process can treat this writer as
 # dead and rerun WAL-index recovery underneath it.  So the probe preads through a per-path fd
-# cached for the life of the process (opening never cancels locks).  When the path is re-pointed
+# cached until process exit or explicit quiescent maintenance (opening never cancels locks). When the path is re-pointed
 # at a new inode (the very replacement this probe detects) the stale fd is RETIRED, never closed
 # — closing it would cancel the live connection's locks.  Replacements are rare and halt writes.
 _HEADER_PROBE_LOCK = threading.Lock()
@@ -76,7 +76,7 @@ _FTS_TABLE_NAMES = ("messages_fts", "messages_fts_trigram", "messages_fts_cjk")
 
 def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
     """Lock-safe raw read of a possibly-live SQLite database: POSIX preads from a cached,
-    never-closed fd (rebound when the path names a new inode); Windows reads plainly, since
+    fd released only during quiescent maintenance (rebound on inode change); Windows reads plainly, since
     advisory-lock cancellation is a POSIX-only hazard."""
     from hermes_state import _IS_WINDOWS
     if _IS_WINDOWS:
@@ -109,6 +109,21 @@ def _pread_db_range(db_path: Path, offset: int, length: int) -> Optional[bytes]:
         with contextlib.suppress(OSError):
             return os.pread(cached[0], length, offset)
     return None
+
+
+def release_idle_header_probe(db_path: Path) -> None:
+    """Release this file's cached probe only after every tracked connection closes.
+
+    The connection-lifecycle lock excludes new SQLite opens through the raw close,
+    which would otherwise cancel a newly opened writer's POSIX locks.
+    """
+    from hermes_cli.sqlite_safe_read import offline_file_access
+    with offline_file_access(db_path, what="release idle header probe"):
+        with _HEADER_PROBE_LOCK:
+            for key in list(_HEADER_PROBE_FDS):
+                if Path(key).resolve() == Path(db_path).resolve():
+                    fd, _, _ = _HEADER_PROBE_FDS.pop(key)
+                    os.close(fd)
 
 
 def _pread_db_header(db_path: Path, length: int) -> Optional[bytes]:
