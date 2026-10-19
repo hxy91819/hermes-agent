@@ -31,3 +31,23 @@ def test_host_child_uses_config_home_of_its_own_desktop(tmp_path, monkeypatch, s
         published.update(XDG_CONFIG_HOME=str(desktop_config), DISPLAY=":20")
     assert published["XDG_CONFIG_HOME"] == str(desktop_config)
     assert desktop_config.exists() is (not sandbox)
+
+
+def test_remote_cua_child_keeps_screen_but_not_remote_config(tmp_path, monkeypatch):
+    from tools.computer_use import cua_backend
+
+    published = {"DISPLAY": ":27", "XAUTHORITY": "/remote/desktop/Xauthority",
+                 "DBUS_SESSION_BUS_ADDRESS": "unix:path=/remote/desktop/bus",
+                 "XDG_CONFIG_HOME": "/root/remote-config"}
+    base = {"DISPLAY": ":1", "XAUTHORITY": "/host/Xauthority",
+            "XDG_CONFIG_HOME": str(tmp_path), "WAYLAND_DISPLAY": "wayland-1"}
+    monkeypatch.setattr(runtime, "published_env", lambda: dict(published))
+    monkeypatch.setattr(runtime, "touch_activity", lambda: None)
+    monkeypatch.setattr(sandbox_host, "_read_marker", lambda: {"backend": "SSHEnvironment"})
+    child = cua_backend.cua_driver_child_env(base)
+    assert {key: child.get(key) for key in published if key != "XDG_CONFIG_HOME"} == {
+        key: value for key, value in published.items() if key != "XDG_CONFIG_HOME"}
+    assert child["XDG_CONFIG_HOME"] == str(tmp_path)
+    assert "WAYLAND_DISPLAY" not in child
+    assert cua_backend.desktop_identity() == ":27"
+    assert base["DISPLAY"] == ":1"
