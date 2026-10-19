@@ -101,7 +101,8 @@ def _write_output(output, text, summary) -> None:
 
 def _cmd_repair(args):
     from hermes_state import DEFAULT_DB_PATH as db_path, SessionDB
-    from hermes_state_repair import _db_opens_cleanly, repair_state_db_schema
+    from hermes_state_repair import _db_opens_cleanly
+    from hermes_cli.sessions_repair_owner import repair_with_profile_paused
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
@@ -113,7 +114,7 @@ def _cmd_repair(args):
     if getattr(args, "check_only", False):
         return 1
     print("Repairing (a backup copy is made first)…")
-    report = repair_state_db_schema(db_path, backup=not getattr(args, "no_backup", False))
+    report = repair_with_profile_paused(db_path, backup=not getattr(args, "no_backup", False))
     if report.get("repaired"):
         if report.get("backup_path"):
             print(f"  backup: {report['backup_path']}")
@@ -140,6 +141,7 @@ def _cmd_repair(args):
         f"    hermes sessions recover --source {source_hint} \\\n"
         "        --output recovered-state.db"
     )
+    return 1
 
 
 def _cmd_recover(args):

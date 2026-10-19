@@ -468,12 +468,18 @@ def rescan_gateway_profiles(home: Path, *, timeout: float = 8.0) -> Optional[dic
     return query_gateway_control(home, "rescan-profiles", timeout=timeout)
 
 
-def request_unserve_profile(home: Path, name: str) -> Optional[dict[str, Any]]:
-    return query_gateway_control(home, "unserve-profile", params={"name": name}, timeout=8.0)
+def request_unserve_profile(home: Path, name: str, *, repair_lease: Optional[dict] = None) -> Optional[dict[str, Any]]:
+    params = {"name": name}
+    if repair_lease is not None:
+        params["repair_lease"] = repair_lease
+    return query_gateway_control(home, "repair-profile-pause" if repair_lease is not None else "unserve-profile", params=params, timeout=8.0)
 
 
-def request_serve_profile_hot(home: Path, name: str) -> Optional[dict[str, Any]]:
-    return query_gateway_control(home, "serve-profile", params={"name": name}, timeout=8.0)
+def request_serve_profile_hot(home: Path, name: str, *, repair_token: Optional[str] = None) -> Optional[dict[str, Any]]:
+    params = {"name": name}
+    if repair_token is not None:
+        params["repair_token"] = repair_token
+    return query_gateway_control(home, "serve-profile", params=params, timeout=8.0)
 
 
 def migrate_gateway_profile_identity(home: Path, old_name: str, new_name: str, *,
