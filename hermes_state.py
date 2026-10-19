@@ -579,6 +579,8 @@ class SessionDB(
     def __init__(self, db_path: Path | None = None, read_only: bool = False):
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
+        from gateway.profile_repair_lease import refuse_new_session_store
+        refuse_new_session_store(self.db_path)
         self.read_only = read_only
         # Keep only the opening call site, never a frame (which pins caller locals).
         self._creation_site = "unknown"
@@ -788,6 +790,8 @@ class SessionDB(
         """Connect + WAL/pragma/tokenizer setup for a writer connection (no schema init). Short timeout:
         jittered application-level retry handles contention, not SQLite's busy handler;
         isolation_level=None: explicit BEGIN IMMEDIATE."""
+        from gateway.profile_repair_lease import refuse_new_session_store
+        refuse_new_session_store(self.db_path)
         conn = _connect_tracked_db(
             str(self.db_path), check_same_thread=False, timeout=1.0, isolation_level=None,
         )

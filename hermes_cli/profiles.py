@@ -1121,13 +1121,7 @@ def _standalone_truthy(value: object) -> bool:
     return bool(value)
 
 
-def parked_marker_path(home: Path) -> Path:
-    return Path(home) / "gateway.parked"
-
-
-def profile_is_parked(home: Path) -> bool:
-    """Marker contents are deliberately irrelevant, including for provisioning."""
-    return parked_marker_path(home).exists()
+from hermes_cli.profiles_maintenance import parked_marker_path, profile_is_parked
 
 
 _parked_default_warned: set[Path] = set()
@@ -1154,10 +1148,11 @@ def profiles_to_serve(multiplex: bool, *, include_standalone: bool = False,
         _parked_default_warned.add(default)
     if not multiplex:
         return [(active, get_profile_dir(active))]
+    from gateway.profile_repair_lease import lease_active
     serve: list[tuple[str, Path]] = [("default", default)]
     serve.extend((entry.name, entry) for entry in _iter_named_profile_dirs()
                  if (include_standalone or not profile_is_standalone(entry))
-                 and (include_parked or not profile_is_parked(entry)))
+                 and (include_parked or (not profile_is_parked(entry) and not lease_active(entry))))
     return serve
 
 

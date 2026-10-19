@@ -318,6 +318,7 @@ async def _start_gateway_start_control_socket(runner):
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
                            "unserve-profile": unserve_profile_verb(runner),
+                           "repair-profile-pause": unserve_profile_verb(runner),
                            "serve-profile": serve_profile_verb(runner),
                            "purge-profile-identity": purge_profile_identity_verb(runner),
                            # A plugin installed/enabled by another process loads now and re-wires the
