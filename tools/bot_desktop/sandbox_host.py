@@ -312,3 +312,31 @@ def cua_mcp_invocation(env: Any, profile: str, published: dict[str, str]) -> tup
     if argv is None:
         raise RuntimeError(f"{type(env).__name__} cannot host cua-driver")
     return argv[0], argv[1:]
+
+
+_BROWSER_CDP_PROBE = r"""
+import os, pathlib, socket, sys
+profile, exclude = sys.argv[1:]
+try:
+    root = pathlib.Path(profile)
+    port = int((root / 'DevToolsActivePort').read_text(encoding='utf-8-sig').splitlines()[0])
+    pid = int(os.readlink(root / 'SingletonLock').rpartition('-')[2])
+    os.kill(pid, 0)
+    status = pathlib.Path(f'/proc/{pid}/status').read_text()
+    parent = next(int(line.split()[1]) for line in status.splitlines() if line.startswith('PPid:'))
+    owner = pathlib.Path(f'/proc/{parent}/environ').read_bytes().split(b'\0')
+    if exclude and b'AGENT_BROWSER_SESSION=' + exclude.encode() in owner:
+        sys.exit(0)
+    with socket.create_connection(('127.0.0.1', port), timeout=0.5):
+        print(port)
+except (OSError, ValueError, IndexError, StopIteration):
+    pass
+"""
+
+
+def browser_cdp_port(env: Any, *, exclude_session: str) -> Optional[int]:
+    """Probe the shared Chromium where it runs; its profile/PIDs/port are sandbox-local."""
+    proc = streams.run_in(env, ["python3", "-c", _BROWSER_CDP_PROBE,
+                              browser_profile_dir(env), exclude_session], user=_user_for(env), timeout=10)
+    value = proc.stdout.decode("utf-8", "replace").strip()
+    return int(value) if proc.returncode == 0 and value.isdigit() and 0 < int(value) < 65536 else None
