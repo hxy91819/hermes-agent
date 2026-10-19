@@ -288,3 +288,21 @@ Both are persistent across sessions, but they serve different purposes:
 ---
 
 *For the complete skills reference — frontmatter fields, conditional activation, external directories, and more — see [Skills System](../user-guide/features/skills.md).*
+
+
+## Skills with a shared SSH workbench
+
+Each host profile has a separate execution copy under the remote user's
+`.hermes/profiles/<profile-home-hash>` directory. SSH commands receive that directory
+as `HERMES_HOME`; `skill_view` returns `execution_dir` for running the skill's scripts.
+Credentials and cache files use the same profile mapping.
+
+Install and update skills on the Hermes host with `skill_manage` or the host CLI.
+SSH execution copies are uploaded from that store and are not synced back as skill
+updates. This keeps another profile or an old terminal copy from reverting an upgrade
+or restoring an uninstalled skill. The old shared remote directories are left in
+place: they are not deleted, migrated, or automatically imported into any profile.
+Use the returned execution directory rather than the old shared path. Editing a
+skill through `skill_manage` in a conversation still writes to the selected host
+profile; the next SSH sync uploads that edit. Local terminal backends retain their
+native host paths.
