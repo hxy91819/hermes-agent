@@ -7,7 +7,7 @@ feature/ssh-cron needs-feedback # design extension: SSH script cron; stacked on 
 feature/shared-ssh-desktop needs-feedback # design extension: multiple profiles sharing an SSH desktop host
 fix/background-stop pr-open https://github.com/NousResearch/hermes-agent/pull/138977 # upstream defect: stop the actual remote process tree
 fix/ssh-socket-path pr-open https://github.com/NousResearch/hermes-agent/pull/138978 # upstream defect: bound every ControlMaster listener path
-fix/remote-skill-ownership fork-only # product adaptation: host-owned skills with per-profile upload-only SSH copies
+fix/remote-skill-ownership-h-baseline fork-only # H baseline ce0de288a6: host-owned skills with per-profile upload-only SSH copies; stale-copy deletion withheld after independent review (no b9862fd711)
 fix/browser-workbench-loopback fork-only # product adaptation: opt-in workbench loopback previews
 fix/cron-reference-parity fork-only # product adaptation: missing remote references remain non-scripts; stacked on feature/ssh-cron
 fix/cron-model-binding pr-open https://github.com/NousResearch/hermes-agent/pull/141155 # upstream defect: retain named model route and reject migrated credential endpoints
