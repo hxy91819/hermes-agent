@@ -157,3 +157,30 @@ def test_sandbox_cdp_rejects_lock_reused_by_a_process_outside_the_profile(tmp_pa
     with _FakeChromium(tmp_path, profile_flag=False) as unrelated:
         _write_profile(tmp_path, unrelated.pid, unrelated.port)
         assert _browser_cdp_port(tmp_path, monkeypatch) is None
+
+
+@pytest.mark.platforms("linux")
+@pytest.mark.parametrize("profile_name", ["profile", "profile with spaces"])
+@pytest.mark.parametrize("suffix,accepted", [("", True), ("-other", False), (" extra", False)])
+def test_sandbox_cdp_handles_chromium_flattened_process_title(tmp_path, monkeypatch, suffix, accepted, profile_name):
+    tmp_path = tmp_path / profile_name
+    tmp_path.mkdir()
+    # Actual packaged Chromium rewrites /proc/<pid>/cmdline into one space-joined argv[0].
+    # Keep the real parent identity, listening socket and owner fds; vary only those bytes.
+    with _FakeChromium(tmp_path) as browser:
+        remote = SimpleNamespace()
+        monkeypatch.setattr(sandbox_host, "browser_profile_dir", lambda env: str(tmp_path))
+        monkeypatch.setattr(sandbox_host, "_user_for", lambda env: None)
+        raw = (f"/opt/chromium/chrome --remote-debugging-port=0 --user-data-dir={tmp_path}{suffix} "
+               "--no-sandbox --disable-dev-shm-usage").encode() + b"\0"
+        prefix = ("import pathlib\n_original_read_bytes = pathlib.Path.read_bytes\n"
+                  "def _proc_bytes(path):\n"
+                  f"    if str(path) == '/proc/{browser.pid}/cmdline': return {raw!r}\n"
+                  "    return _original_read_bytes(path)\n"
+                  "pathlib.Path.read_bytes = _proc_bytes\n")
+        def run_in(env, argv, **kwargs):
+            return subprocess.run([sys.executable, "-c", prefix + argv[2], *argv[3:]],
+                                  capture_output=True, check=True)
+        monkeypatch.setattr(sandbox_host.streams, "run_in", run_in)
+        value = sandbox_host.browser_cdp_port(remote, exclude_session="other", xauthority=XAUTHORITY)
+        assert value == (browser.port if accepted else None)

@@ -323,11 +323,20 @@ def owns_profile(pid):
     # The lock's pid must be the Chromium launched for THIS --user-data-dir: a crashed
     # browser leaves SingletonLock behind and its pid can be reused by any live process.
     try:
-        argv = [arg.rstrip(b'/') for arg in pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')]
+        argv = [arg for arg in pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0') if arg]
     except OSError:
         return False
+    if len(argv) == 1:
+        # Linux Chromium rewrites its process title into one space-joined argv[0].
+        # Split at switch boundaries, preserving spaces in the profile path and
+        # requiring the entire switch value (a profile prefix is not ownership).
+        title = argv[0].split(b' --')
+        argv = title[:1] + [b'--' + switch for switch in title[1:]]
+    argv = [arg.rstrip(b'/') for arg in argv]
     wanted = profile.rstrip('/').encode()
-    return b'--user-data-dir=' + wanted in argv or (b'--user-data-dir' in argv and wanted in argv)
+    return b'--user-data-dir=' + wanted in argv or any(
+        arg == b'--user-data-dir' and argv[index + 1:index + 2] == [wanted]
+        for index, arg in enumerate(argv))
 
 
 def owns_port(pid):
