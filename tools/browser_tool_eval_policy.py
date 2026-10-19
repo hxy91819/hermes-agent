@@ -25,13 +25,15 @@ def _eval_ssrf_guard_active(effective_task_id: str) -> bool:
 
 def _url_blocked(_bt, url: str) -> bool:
     """True when ``url`` hits the always-blocked cloud-metadata floor or fails the SSRF guard."""
-    return _bt._is_always_blocked_url(url) or not _bt._is_safe_url(url)
+    return _bt._is_always_blocked_url(url) or (
+        not _cloud._loopback_url_allowed(url) and not _bt._is_safe_url(url)
+    )
 
 
 # URL-shaped literals embedded in a JS expression (http/https only). fetch/XHR/navigate
 # to a private host never updates ``location.href``, so the post-eval page-URL recheck
 # can't see it; pre-screen the literals instead.
-_JS_URL_LITERAL_RE = re.compile(r"""https?://[^\s'"`)\]<>]+""", re.IGNORECASE)
+_JS_URL_LITERAL_RE = re.compile(r"""https?://(?:\[[^\]\s]+\]|[^\s'"`)\]<>/]+)[^\s'"`)\]<>]*""", re.IGNORECASE)
 
 
 def _expression_targets_private_url(expression: str) -> Optional[str]:

@@ -18,6 +18,63 @@ from tools import browser_tool_cloud as bt_cloud
 from tools import browser_tool_session as bt_session
 
 
+@pytest.mark.parametrize("host,allowed", [
+    ("localhost", True), ("127.0.0.1", True), ("127.23.45.67", True),
+    ("[::1]", True), ("10.0.0.1", False), ("172.16.0.1", False),
+    ("192.168.1.1", False), ("169.254.1.2", False),
+    ("169.254.169.254", False), ("100.100.100.200", False),
+    ("[fd00::1]", False), ("[fe80::1]", False),
+    ("10.0.0.1\\@localhost", False), ("[::ffff:127.0.0.1]", False),
+])
+def test_workbench_loopback_policy(tmp_path, monkeypatch, host, allowed):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools import browser_tool_eval_policy as policy
+    from tools.browser_use_cli import _code_url_verdict
+
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+    monkeypatch.setattr(browser_tool, "_hybrid_routes_locally", lambda url: False)
+    monkeypatch.setattr(browser_tool, "check_website_access", lambda url: None)
+    monkeypatch.setattr(bt_session, "_run_browser_command", lambda *a, **kw: {})
+    url = f"http://{host}:18091/"
+    token = set_hermes_home_override(tmp_path)
+    try:
+        for setting in ("false", "true", "'false'"):
+            (tmp_path / "config.yaml").write_text(f"browser:\n  allow_loopback_urls: {setting}\n")
+            permitted = allowed and setting == "true"
+            assert (browser_tool.evaluate_url_safety(url) is None) == permitted
+            assert (policy._expression_targets_private_url(f"fetch('{url}')") is None) == permitted
+            assert (browser_tool._post_redirect_block("test", "https://example.com", url, False) is None) == permitted
+            verdict, _ = _code_url_verdict(f"await page.goto('{url}')")
+            assert (verdict is None) == permitted
+    finally:
+        reset_hermes_home_override(token)
+
+
+def test_loopback_opt_in_is_profile_scoped_and_keeps_website_policy(tmp_path, monkeypatch):
+    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+    monkeypatch.setattr(bt_cloud, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(bt_cloud, "_allow_private_urls", lambda: False)
+    allowed = tmp_path / "allowed"
+    blocked = tmp_path / "blocked"
+    allowed.mkdir()
+    blocked.mkdir()
+    (allowed / "config.yaml").write_text("browser:\n  allow_loopback_urls: true\n")
+    url = "http://127.0.0.1:18091/"
+    for home in (allowed, blocked, allowed):
+        token = set_hermes_home_override(home)
+        try:
+            monkeypatch.setattr(browser_tool, "check_website_access", lambda url: None)
+            assert (browser_tool.evaluate_url_safety(url) is None) == (home == allowed)
+            monkeypatch.setattr(browser_tool, "check_website_access", lambda url: {
+                "message": "Denied by operator", "host": "127.0.0.1", "rule": "deny", "source": "config",
+            })
+            assert browser_tool.evaluate_url_safety(url) is not None
+        finally:
+            reset_hermes_home_override(token)
+
+
 def _make_browser_result(url="https://example.com"):
     """Return a mock successful browser command result."""
     return {"success": True, "data": {"title": "OK", "url": url}}
