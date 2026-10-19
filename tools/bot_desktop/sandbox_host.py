@@ -317,6 +317,56 @@ def cua_mcp_invocation(env: Any, profile: str, published: dict[str, str]) -> tup
 _BROWSER_CDP_PROBE = r"""
 import os, pathlib, socket, sys
 profile, exclude, xauthority = sys.argv[1:]
+
+
+def owns_profile(pid):
+    # The lock's pid must be the Chromium launched for THIS --user-data-dir: a crashed
+    # browser leaves SingletonLock behind and its pid can be reused by any live process.
+    try:
+        argv = [arg.rstrip(b'/') for arg in pathlib.Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')]
+    except OSError:
+        return False
+    wanted = profile.rstrip('/').encode()
+    return b'--user-data-dir=' + wanted in argv or (b'--user-data-dir' in argv and wanted in argv)
+
+
+def owns_port(pid):
+    # DevToolsActivePort is written separately from SingletonLock, so a live pid and an
+    # accepting socket are not enough: both files can be stale, and the port can already
+    # belong to another process. Require the verified pid to hold the listening socket.
+    inodes = set()
+    try:
+        rows = pathlib.Path(f'/proc/{pid}/net/tcp').read_text().splitlines()[1:]
+    except OSError:
+        return False
+    for row in rows:
+        fields = row.split()
+        if len(fields) < 10 or fields[3] != '0A':
+            continue
+        address, _, raw_port = fields[1].rpartition(':')
+        try:
+            listening = int(raw_port, 16)
+        except ValueError:
+            continue
+        # 127.0.0.1 or 0.0.0.0: the probe itself connects to IPv4 loopback.
+        if listening == port and address in ('0100007F', '00000000'):
+            inodes.add(fields[9])
+    if not inodes:
+        return False
+    try:
+        fds = os.listdir(f'/proc/{pid}/fd')
+    except OSError:
+        return False
+    for fd in fds:
+        try:
+            target = os.readlink(f'/proc/{pid}/fd/{fd}')
+        except OSError:
+            continue
+        if target.startswith('socket:[') and target[8:-1] in inodes:
+            return True
+    return False
+
+
 try:
     root = pathlib.Path(profile)
     port = int((root / 'DevToolsActivePort').read_text(encoding='utf-8-sig').splitlines()[0])
@@ -328,10 +378,13 @@ try:
         owner = pathlib.Path(f'/proc/{parent}/environ').read_bytes().split(b'\0')
     except OSError:
         owner = []
-    # Chromium has a scrubbed env; its daemon carries the desktop identity.
+    # Chromium has a scrubbed env; its daemon carries the desktop identity. This is a misattach
+    # guard, not a security boundary: the env file is writable by the work environment's user.
     if b'XAUTHORITY=' + xauthority.encode() not in owner:
         sys.exit(0)
     if exclude and b'AGENT_BROWSER_SESSION=' + exclude.encode() in owner:
+        sys.exit(0)
+    if not owns_profile(pid) or not owns_port(pid):
         sys.exit(0)
     with socket.create_connection(('127.0.0.1', port), timeout=0.5):
         print(port)
@@ -341,7 +394,13 @@ except (OSError, ValueError, IndexError, StopIteration):
 
 
 def browser_cdp_port(env: Any, *, exclude_session: str, xauthority: str) -> Optional[int]:
-    """Probe only this desktop's Chromium; profiles can share a sandbox filesystem."""
+    """Port of this desktop's live Chromium, or ``None``.
+
+    A misattach guard, not an isolation boundary: the desktop identity is read from the work
+    environment's ``env`` file, and a process able to rewrite that file can already reach the
+    sandbox's CDP ports directly. The check only keeps a fresh session from attaching to another
+    desktop's browser by accident; the lock and the port must describe the same verified Chromium.
+    """
     if not xauthority:
         return None
     proc = streams.run_in(env, ["python3", "-c", _BROWSER_CDP_PROBE,
