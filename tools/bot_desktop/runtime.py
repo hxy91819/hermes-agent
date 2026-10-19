@@ -343,12 +343,17 @@ def _allocate_display() -> int:
 
 def desktop_env(base_env: Optional[dict[str, str]] = None) -> dict[str, str]:
     """``base_env`` (default ``os.environ``) with this profile's DISPLAY/XAUTHORITY/DBUS_SESSION_BUS_ADDRESS
-    merged in when its desktop is running. Unchanged otherwise, so hosts with a real seat keep it.
+    merged in when its desktop runs on this host. Sandbox variables stay at the remote spawn boundary.
     Pure: never starts anything (it is called from env builders, status probes and tests)."""
     env = dict(os.environ if base_env is None else base_env)
     published = published_env()
     if published:
         touch_activity()  # a browser / cua-driver spawn is the agent using its screen
+        from tools.bot_desktop import sandbox_host
+        if sandbox_host._read_marker():
+            # Host children (notably browser-harness) use the host filesystem.
+            # Sandbox spawns receive the published env at their remote boundary.
+            return env
         env.update(published)
         env.pop("WAYLAND_DISPLAY", None)  # X11 desktop; a leaked Wayland socket flips GTK/Chromium backends
         from tools.bot_desktop.browser import env_for_agent

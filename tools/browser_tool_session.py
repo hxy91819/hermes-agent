@@ -838,6 +838,11 @@ def _bot_desktop_attach_port(session_info: dict[str, Any]) -> Optional[int]:
     """DevTools port of a human-started Chromium on the Bot Desktop's shared profile, else ``None``."""
     if not _shares_bot_desktop_browser(session_info):
         return None
+    if _browser_in_sandbox():
+        from tools.bot_desktop import runtime, sandbox_host
+        env = runtime._sandbox_env(create=False)
+        return sandbox_host.browser_cdp_port(env, exclude_session=session_info["session_name"],
+                                             xauthority=runtime.published_env().get("XAUTHORITY", "")) if env is not None else None
     from tools.bot_desktop import browser as _bd_browser
     return _bd_browser.running_instance_cdp_port(str(_bd_browser.profile_dir()),
                                                  exclude_session=session_info["session_name"])
