@@ -287,6 +287,7 @@ def _mock_ssh_runtime(monkeypatch, tmp_path):
         "_establish_connection": MagicMock(),
         "_detect_remote_home": MagicMock(return_value="/home/alice"),
         "_ensure_remote_dirs": MagicMock(),
+        "_run_ssh": MagicMock(return_value=subprocess.CompletedProcess([], 0, stdout="", stderr="")),
         "init_session": MagicMock(),
     }
     monkeypatch.setattr(ssh_env.tempfile, "gettempdir", lambda: str(tmp_path))

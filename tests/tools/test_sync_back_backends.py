@@ -160,8 +160,8 @@ class TestSSHCleanup:
             def sync(self, **kw):
                 pass
 
-            def sync_back(self):
-                call_order.append("sync_back")
+            def sync_back(self, **kwargs):
+                call_order.append(("sync_back", kwargs.get("hermes_home")))
 
         monkeypatch.setattr(ssh_env, "FileSyncManager", TrackingSyncManager)
 
@@ -181,7 +181,10 @@ class TestSSHCleanup:
         with patch.object(subprocess, "run", side_effect=mock_run):
             env.cleanup()
 
-        assert call_order.index("sync_back") < call_order.index("control_exit")
+        sync_back_at = next(index for index, entry in enumerate(call_order)
+                            if isinstance(entry, tuple) and entry[0] == "sync_back")
+        assert call_order[sync_back_at][1] == env._hermes_home
+        assert sync_back_at < call_order.index("control_exit")
 
 # =====================================================================
 # Modal bulk download
