@@ -21,9 +21,9 @@ print('READY',flush=True)
 while True:
  c,_=s.accept();c.close()
 """
-    parent = "import subprocess,sys; subprocess.run([sys.executable,'-c',sys.argv[1],sys.argv[2]],check=True)"
+    parent = "import subprocess,sys; subprocess.run([sys.executable,'-c',sys.argv[1],sys.argv[2]],check=True,env={})"
     process = subprocess.Popen([sys.executable, "-c", parent, child, str(tmp_path)],
-                               env={**os.environ, "AGENT_BROWSER_SESSION": "owner"},
+                               env={**os.environ, "AGENT_BROWSER_SESSION": "owner", "XAUTHORITY": "/desktop/alpha/Xauthority"},
                                stdout=subprocess.PIPE, text=True, start_new_session=True)
     try:
         assert process.stdout.readline().strip() == "READY"
@@ -36,8 +36,14 @@ while True:
         monkeypatch.setattr(sandbox_host, "_user_for", lambda env: None)
         monkeypatch.setattr(sandbox_host.streams, "run_in", lambda env, argv, **_: subprocess.run(
             [sys.executable, *argv[1:]], capture_output=True, check=True))
+        desktop = {"XAUTHORITY": "/desktop/alpha/Xauthority"}
+        monkeypatch.setattr("tools.bot_desktop.runtime.published_env", lambda: dict(desktop))
         assert session._bot_desktop_attach_port({"session_name": "other"}) == port
         assert session._bot_desktop_attach_port({"session_name": "owner"}) is None
+        desktop["XAUTHORITY"] = "/desktop/beta/Xauthority"
+        assert session._bot_desktop_attach_port({"session_name": "other"}) is None
+        desktop.clear()
+        assert session._bot_desktop_attach_port({"session_name": "other"}) is None
     finally:
         os.killpg(process.pid, signal.SIGTERM)
         process.wait(timeout=5)
