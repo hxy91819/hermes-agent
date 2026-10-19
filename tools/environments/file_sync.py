@@ -197,7 +197,9 @@ class FileSyncManager:
         delete_fn: DeleteFn,
         sync_interval: float = _SYNC_INTERVAL_SECONDS,
         bulk_upload_fn: BulkUploadFn | None = None,
-        bulk_download_fn: BulkDownloadFn | None = None):
+        bulk_download_fn: BulkDownloadFn | None = None,
+        upload_only_roots: tuple[str, ...] = ()):
+        self._upload_only_roots = upload_only_roots
         self._get_files_fn = get_files_fn
         self._upload_fn = upload_fn
         self._bulk_upload_fn = bulk_upload_fn
@@ -438,6 +440,8 @@ class FileSyncManager:
         """Copy one extracted remote file onto the host if it changed since push. Returns 1 if
         applied, 0 if skipped (unchanged, unmapped, or an upload-only credential). A host file
         modified since push is overwritten with the remote version (last-write-wins) with a warning."""
+        if any(remote_path.startswith(root.rstrip("/") + "/") for root in self._upload_only_roots):
+            return 0
         pushed_hash = self._pushed_hashes.get(remote_path)
         if pushed_hash is not None and _sha256_file(staged_file) == pushed_hash:
             return 0  # unchanged from push
