@@ -10,6 +10,8 @@ listener bound stalled every cold start and the control socket's identify. The d
 on its first request (imported off the event loop) or warmed after READY for a supervised gateway
 (``warm_gateway_dashboard``); a gated listener (non-loopback bind or ``dashboard.public_url``) and a
 process that already imported it mount it before the listener starts, exactly as before.
+The native WS handler is initialized off-loop before binding: its first import builds the RPC
+schemas, which must not block the owner loop or consume a ready client's handshake budget.
 """
 
 import asyncio
@@ -161,6 +163,10 @@ async def start_gateway_api(runner, *, host: str = "127.0.0.1", port: int = 0) -
     listener = socket.socket(family, kind, proto)
     _ACTIVE_RUNNER = runner
     try:
+        # A first native upgrade must not synchronously import the WS server and all RPC
+        # schemas on the owner loop. Finish that initialization before advertising this listener.
+        import importlib
+        await asyncio.to_thread(importlib.import_module, "tui_gateway.ws")
         listener.bind(address)
         listener.setblocking(False)
         state.bound_port = listener.getsockname()[1]
