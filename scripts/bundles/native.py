@@ -140,7 +140,8 @@ def prune_staged_store(store_dir: Path, names: list[str]) -> None:
 
 
 def prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
-                   tools: Path | None = None, env: dict | None = None) -> Path:
+                   tools: Path | None = None, env: dict | None = None,
+                   extras: list[str] | None = None) -> Path:
     """Prepare final payload dependencies inside the caller's isolated PM process.
 
     The caller supplies its compiler environment; only the full standalone
@@ -156,11 +157,11 @@ def prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
         prepared_path(out).unlink(missing_ok=True)
         (out / "manifest.json").unlink(missing_ok=True)
         return _prepare_native(out=out, ref=ref, source=Path(source).resolve(),
-                               cache=Path(cache).resolve(), tools=tools, env=env)
+                               cache=Path(cache).resolve(), tools=tools, env=env, extras=extras)
 
 
 def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
-                    tools: Path | None, env: dict | None) -> Path:
+                    tools: Path | None, env: dict | None, extras: list[str] | None = None) -> Path:
     from pm import paths
     from pm.package import InstallError
 
@@ -225,9 +226,9 @@ def _prepare_native(*, out: Path, ref: str, source: Path, cache: Path,
 
     # Cold native wheels need a larger budget than interactive installs.
     build_environment(source=repo_dir, python=python_bin, out=venv_dir,
-                      env=env, cache=cache, all_extras=True, sealed=True, explicit=True,
+                      env=env, cache=cache, extras=extras or (), all_extras=extras is None, sealed=True, explicit=True,
                       timeout=2 * 60 * 60)
-    print("✓ venv (all extras, on the staged interpreter)")
+    print("✓ venv (selected extras, on the staged interpreter)")
 
     # Inventory the staged interpreter before publishing the bundle contract.
     from pm.features import installed_extras, write_features
