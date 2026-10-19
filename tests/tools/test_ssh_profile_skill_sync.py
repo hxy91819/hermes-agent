@@ -140,3 +140,142 @@ def test_ssh_scripts_and_images_resolve_the_synced_profile(tmp_path, monkeypatch
         monkeypatch.setenv('TERMINAL_ENV', 'ssh')
         assert image_generation_tool._agent_cache_base_for_env(None).replace('~', str(tmp_path / 'remote'), 1) == str(root)
         (root / 'google_token.json').unlink()
+
+
+def test_new_ssh_environment_removes_uninstalled_skill_copies(tmp_path, monkeypatch):
+    """An uninstall run outside this process (host CLI/ACLI) leaves no executable copy.
+
+    Deletion of remote skill files used to depend on the in-process ``_synced_files``
+    map, so a fresh environment (new session or gateway restart) enumerated only the
+    current host files and never noticed the copy an earlier environment uploaded.
+    """
+    monkeypatch.setenv('TERMINAL_ENV', 'ssh')
+    remote = {}
+    uploads = {}
+    monkeypatch.setattr(SSHEnvironment, '_establish_connection', lambda self: None)
+    monkeypatch.setattr(SSHEnvironment, '_detect_remote_home', lambda self: '/workbench')
+    monkeypatch.setattr(SSHEnvironment, '_ensure_remote_dirs', lambda self: None)
+    monkeypatch.setattr(SSHEnvironment, 'init_session', lambda self: None)
+    monkeypatch.setattr(SSHEnvironment, 'cleanup', lambda self: None)
+
+    def upload(self, files):
+        uploads.setdefault(self, {}).update({dst: Path(src).read_bytes() for src, dst in files})
+        remote.update({dst: Path(src).read_bytes() for src, dst in files})
+    monkeypatch.setattr(SSHEnvironment, '_ssh_bulk_upload', upload)
+
+    def delete(self, paths):
+        for path in paths:
+            remote.pop(path, None)
+    monkeypatch.setattr(SSHEnvironment, '_ssh_delete', delete)
+    # Seams the reconciliation uses; raising=False keeps this a behavioural red test
+    # against the unfixed backend instead of failing on a missing attribute.
+    def list_remote(self):
+        roots = self._skill_sync_roots()
+        return {path for path in remote
+                if any(path == root or path.startswith(root + '/') for root in roots)}
+    monkeypatch.setattr(SSHEnvironment, '_list_remote_skill_files', list_remote, raising=False)
+    def prune(self, dirs):
+        for directory in sorted(dirs, key=len, reverse=True):
+            for path in list(remote):
+                if path.startswith(directory + '/'):
+                    remote.pop(path, None)
+    monkeypatch.setattr(SSHEnvironment, '_prune_empty_remote_dirs', prune, raising=False)
+
+    def write(home, relative, text):
+        target = home / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(text)
+
+    homes = {'A': tmp_path / 'A', 'B': tmp_path / 'B'}
+    for label, home in homes.items():
+        for name, body in (('removed', 'V2' if label == 'A' else 'V1'),
+                           ('live', 'V2' if label == 'A' else 'V1')):
+            write(home, f'skills/testing/{name}/SKILL.md',
+                  f'---\nname: {name}\ndescription: {name}\n---\n{body}')
+            write(home, f'skills/testing/{name}/scripts/report.py', f'print("{body}")')
+        write(home, 'cache/images/result.txt', f'{label} cache')
+
+    envs = {}
+    for label, home in homes.items():
+        with profile(home):
+            envs[label] = SSHEnvironment('workbench', 'user')
+
+    def remote_dir(label, skill):
+        return next(dst for dst in uploads[envs[label]] if dst.endswith(f'/skills/testing/{skill}/SKILL.md')).rsplit('/', 1)[0]
+
+    a_removed = remote_dir('A', 'removed')
+    a_live = remote_dir('A', 'live')
+    b_removed = remote_dir('B', 'removed')
+    b_live = remote_dir('B', 'live')
+    # Runtime-only artifacts: a removed skill's whole directory must go, but files the
+    # agent generated inside a still-installed skill (venv, node_modules, ...) stay.
+    remote[a_removed + '/.venv/bin/python'] = b'stale runtime'
+    remote[a_live + '/.venv/bin/python'] = b'live runtime'
+    remote[b_live + '/.venv/bin/python'] = b'other profile runtime'
+
+    shutil.rmtree(homes['A'] / 'skills/testing/removed')
+
+    with profile(homes['A']):
+        SSHEnvironment('workbench', 'user')
+    assert not any(path.startswith(a_removed + '/') for path in remote)
+    assert remote[a_live + '/.venv/bin/python'] == b'live runtime'
+    assert remote[a_live + '/SKILL.md'].endswith(b'V2')
+    assert remote[a_live + '/scripts/report.py'] == b'print("V2")'
+    assert remote[a_live.rsplit('/skills/', 1)[0] + '/cache/images/result.txt'] == b'A cache'
+    # Other profiles and non-skill cache entries are untouched.
+    assert any(path.startswith(b_removed + '/') for path in remote)
+    assert remote[b_live + '/.venv/bin/python'] == b'other profile runtime'
+    assert remote[b_live.rsplit('/skills/', 1)[0] + '/cache/images/result.txt'] == b'B cache'
+
+    # A later restart must not re-upload the removed skill from host state.
+    with profile(homes['A']):
+        SSHEnvironment('workbench', 'user')
+    assert not any(path.startswith(a_removed + '/') for path in remote)
+    assert not (homes['A'] / 'skills/testing/removed').exists()
+
+
+def test_remote_skill_listing_drops_paths_outside_profile_roots(tmp_path, monkeypatch):
+    """A hostile/buggy remote listing cannot widen rm beyond this profile's roots."""
+    monkeypatch.setenv('TERMINAL_ENV', 'ssh')
+    monkeypatch.setattr(SSHEnvironment, '_establish_connection', lambda self: None)
+    monkeypatch.setattr(SSHEnvironment, '_detect_remote_home', lambda self: '/workbench')
+    monkeypatch.setattr(SSHEnvironment, 'init_session', lambda self: None)
+    monkeypatch.setattr(SSHEnvironment, 'cleanup', lambda self: None)
+    with profile(tmp_path / 'host'):
+        env = SSHEnvironment('workbench', 'user', sync_files=False)
+        root = env._skill_sync_roots()[0]
+        inside = f'{root}/testing/live/SKILL.md'
+        stdout = '\0'.join([
+            inside,
+            f'{root}/../../etc/passwd',
+            '/root/.hermes/skills/legacy/SKILL.md',
+            f'{root}/testing/live/../live/scripts/report.py',
+        ]) + '\0'
+        monkeypatch.setattr(SSHEnvironment, '_run_ssh', lambda self, command, timeout: type(
+            'R', (), {'returncode': 0, 'stdout': stdout, 'stderr': ''})())
+        assert env._list_remote_skill_files() == {
+            inside, f'{root}/testing/live/scripts/report.py'}
+
+
+def test_skill_reconcile_never_widens_to_a_sync_root_or_live_nested_skill(tmp_path, monkeypatch):
+    """A stale SKILL.md at a root, or above a live nested skill, must not widen removal."""
+    monkeypatch.setattr(SSHEnvironment, '_establish_connection', lambda self: None)
+    monkeypatch.setattr(SSHEnvironment, '_detect_remote_home', lambda self: '/workbench')
+    monkeypatch.setattr(SSHEnvironment, 'init_session', lambda self: None)
+    monkeypatch.setattr(SSHEnvironment, 'cleanup', lambda self: None)
+    with profile(tmp_path / 'host'):
+        env = SSHEnvironment('workbench', 'user', sync_files=False)
+        root = env._skill_sync_roots()[0]
+        parent = f'{root}/testing/parent'
+        child = f'{parent}/child'
+        remote = {
+            f'{root}/SKILL.md',
+            f'{parent}/SKILL.md',
+            f'{parent}/old.py',
+            f'{child}/SKILL.md',
+            f'{child}/run.py',
+        }
+        expected = {f'{child}/SKILL.md', f'{child}/run.py'}
+        stale_files, stale_dirs = env._stale_remote_skill_files(remote, expected)
+        assert stale_dirs == {parent}
+        assert set(stale_files) == {f'{parent}/SKILL.md', f'{parent}/old.py'}

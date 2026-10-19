@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import logging
 import os
+import posixpath
 import shlex
 import shutil
 import subprocess
@@ -12,7 +13,7 @@ from pathlib import Path
 from typing import Iterable
 
 from hermes_constants import get_hermes_home, set_hermes_home_override, reset_hermes_home_override
-from tools.credential_files import ssh_profile_sync_base
+from tools.credential_files import iter_skills_files, ssh_profile_sync_base
 
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
@@ -30,6 +31,10 @@ _SSH_MULTIPLEX = os.name != "nt"
 
 # Module-level binding: tests patch ``ssh._load_hermes_env_vars`` to fake the .env file.
 _load_hermes_env_vars = load_hermes_env_vars
+
+# Remote roots that receive upload-only skill copies. Reconciliation is scoped to
+# these; credentials, cache and the legacy shared skills tree are never touched.
+_SKILL_SYNC_SUBDIRS = ("skills", "external_skills", "project_skills")
 
 
 def _ensure_ssh_available() -> None:
@@ -87,6 +92,12 @@ class SSHEnvironment(BaseEnvironment):
         self._sync_manager = None
         if sync_files:
             self._ensure_remote_dirs()
+            # Best effort: a cleanup failure must not make the workbench unusable;
+            # the next environment retries against the same remote tree.
+            try:
+                self._reconcile_remote_skill_copies()
+            except Exception:
+                logger.exception("SSH: stale skill copy cleanup failed on %s", self.host)
             self._sync_manager = FileSyncManager(
                 get_files_fn=self._profile_sync_files,
                 upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
@@ -181,6 +192,105 @@ class SSHEnvironment(BaseEnvironment):
             return iter_sync_files(self._sync_base)
         finally:
             reset_hermes_home_override(token)
+
+    def _skill_sync_roots(self) -> tuple[str, ...]:
+        return tuple(f"{self._sync_base}/{name}" for name in _SKILL_SYNC_SUBDIRS)
+
+    def _profile_skill_files(self) -> list[dict[str, str]]:
+        """Current host skill files mapped into this profile's remote namespace."""
+        token = set_hermes_home_override(self._hermes_home)
+        try:
+            return iter_skills_files(container_base=self._sync_base)
+        finally:
+            reset_hermes_home_override(token)
+
+    def _list_remote_skill_files(self) -> set[str]:
+        """Enumerate existing regular files and symlinks under the skill roots."""
+        roots = self._skill_sync_roots()
+        # One round trip. Optional roots (external_skills/project_skills) may be
+        # absent; a real find error aborts instead of being read as "nothing there".
+        # A symlinked base/root is skipped: following it could enumerate (and then
+        # delete) another profile's tree through this profile's path string.
+        command = (
+            f"if [ -L {shlex.quote(self._sync_base)} ]; then exit 1; fi; "
+            "for d in " + " ".join(shlex.quote(root) for root in roots) + "; do "
+            "if [ -L \"$d\" ]; then continue; fi; "
+            "if [ -d \"$d\" ]; then find \"$d\" \\( -type f -o -type l \\) -print0 || exit 1; fi; done"
+        )
+        result = self._run_ssh(command, timeout=30)
+        if result.returncode != 0:
+            logger.warning("SSH: could not enumerate remote skill copies on %s: %s",
+                           self.host, result.stderr.strip())
+            return set()
+        found = set()
+        for raw in result.stdout.split("\0"):
+            if not raw:
+                continue
+            normalized = posixpath.normpath(raw)
+            # Never trust the remote to keep rm scoped to this profile's skill roots.
+            if any(normalized == root or normalized.startswith(root + "/") for root in roots):
+                found.add(normalized)
+        return found
+
+    def _stale_remote_skill_files(
+        self, remote_files: set[str], expected_files: set[str],
+    ) -> tuple[list[str], set[str]]:
+        """Files under remote skill dirs whose ``SKILL.md`` no longer exists on the host.
+
+        A missing SKILL.md means the whole skill was uninstalled (or renamed). Only that
+        skill directory is removed: files an agent generated inside a still-installed
+        skill (venv, node_modules, ...) are execution state, not stale uploads.
+
+        A SKILL.md directly at a sync root is never treated as a removable skill: that
+        would make the root itself "stale" and delete every skill below it. A live
+        nested skill inside a stale parent also survives.
+        """
+        roots = self._skill_sync_roots()
+        remote_skill_dirs = {
+            posixpath.dirname(path) for path in remote_files
+            if posixpath.basename(path) == "SKILL.md"
+        }
+        candidate_dirs = {directory for directory in remote_skill_dirs
+                          if all(directory != root for root in roots)}
+        stale_dirs = {directory for directory in candidate_dirs
+                      if f"{directory}/SKILL.md" not in expected_files}
+        live_dirs = candidate_dirs - stale_dirs
+        stale_files = []
+        for path in sorted(remote_files):
+            if not any(path == directory or path.startswith(directory + "/")
+                       for directory in stale_dirs):
+                continue
+            if any(path == directory or path.startswith(directory + "/")
+                   for directory in live_dirs):
+                continue
+            stale_files.append(path)
+        return stale_files, stale_dirs
+
+    def _prune_empty_remote_dirs(self, directories: set[str]) -> None:
+        if not directories:
+            return
+        quoted = " ".join(shlex.quote(directory) for directory in sorted(directories))
+        self._run_ssh(f"find {quoted} -depth -type d -empty -delete 2>/dev/null || true", timeout=10)
+
+    def _reconcile_remote_skill_copies(self) -> None:
+        """Drop execution copies of skills that no longer exist on the host.
+
+        ``FileSyncManager`` only deletes remote files recorded by this process, so a
+        fresh session, gateway restart or an uninstall through the host CLI (ACLI)
+        left the previous environment's copy behind and still executable. Rebuilding
+        the expected inventory from host state and comparing it with the remote tree
+        makes cleanup independent of process-local memory.
+        """
+        expected = {entry["container_path"] for entry in self._profile_skill_files()}
+        stale_files, stale_dirs = self._stale_remote_skill_files(
+            self._list_remote_skill_files(), expected)
+        if not stale_files:
+            return
+        logger.info("SSH: removing %d stale skill file(s) from %d uninstalled skill dir(s) on %s",
+                    len(stale_files), len(stale_dirs), self.host)
+        for start in range(0, len(stale_files), 200):
+            self._ssh_delete(stale_files[start:start + 200])
+        self._prune_empty_remote_dirs(stale_dirs)
 
     def _ensure_remote_dirs(self) -> None:
         """Create base ~/.hermes directory tree on remote in one SSH call."""

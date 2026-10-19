@@ -300,7 +300,10 @@ Credentials and cache files use the same profile mapping.
 Install and update skills on the Hermes host with `skill_manage` or the host CLI.
 SSH execution copies are uploaded from that store and are not synced back as skill
 updates. This keeps another profile or an old terminal copy from reverting an upgrade
-or restoring an uninstalled skill. The old shared remote directories are left in
+or restoring an uninstalled skill. When a skill no longer exists on the host, the
+next SSH environment for that profile removes its execution copy, including a copy
+left by an earlier gateway process; files generated at runtime inside skills that
+still exist are left alone. The old shared remote directories are left in
 place: they are not deleted, migrated, or automatically imported into any profile.
 Use the returned execution directory rather than the old shared path. Editing a
 skill through `skill_manage` in a conversation still writes to the selected host
