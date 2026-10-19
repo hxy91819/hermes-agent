@@ -3521,7 +3521,7 @@ class GatewayRunner(
         """
         from hermes_state import AsyncSessionDB, _default_db_path
         from hermes_state_registry import acquire
-        from gateway.session_db_recovery import RecoverableHandleCache
+        from gateway.session_db_recovery import RecoverableHandleCache, unavailable_borrowed_store
         path = Path(_default_db_path())
         cache = getattr(self, "_session_db_handle_cache", None)
         if cache is None:
@@ -3548,7 +3548,7 @@ class GatewayRunner(
                 return wrapper
             if store is not None:
                 # Store handle unavailable: opening our own would resurrect the duplicate borrowed away.
-                raise RuntimeError("SessionStore SQLite handle unavailable")
+                unavailable_borrowed_store(path)
             try:
                 return AsyncSessionDB(acquire())
             except Exception as exc:
