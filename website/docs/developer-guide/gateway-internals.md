@@ -233,6 +233,14 @@ ACP and finite CLI viewers detach with an explicit recovery notice if an accepte
 input becomes blocked behind an unknown execution. The accepted input remains
 queued: resolve the lost turn before continuing, rather than resending it.
 
+## Native session listener readiness
+
+The gateway initializes the native WebSocket handler off the owner event loop before
+binding its session listener. Its cold RPC-schema imports must finish before runtime
+readiness is published; otherwise the first CLI or cron connection can consume its
+handshake budget while blocking every profile on that loop. The dashboard app remains
+lazy, and ticket, Host, peer, and profile checks are unchanged.
+
 ## Private native HTTP authentication
 
 The authoritative daemon accepts a **fresh, one-use HTTP grant per request** from
