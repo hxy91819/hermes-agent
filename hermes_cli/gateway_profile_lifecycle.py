@@ -36,6 +36,10 @@ def profile_lifecycle(command: str, args) -> bool:
     if not name or name == "default" or getattr(args, "all", False) or getattr(args, "force", False):
         return False
     home = get_hermes_home()
+    from gateway.profile_repair_lease import lease_active
+    if lease_active(home):
+        print(f"Profile '{name}' is under repair maintenance; retry gateway {command} after repair finishes.")
+        raise SystemExit(1)
     if profile_is_standalone(home):
         # gateway.standalone wins: the host never serves (or parks) an opted-out profile, so its
         # verbs keep addressing its own gateway process even while a stale host record lists it.
