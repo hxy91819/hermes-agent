@@ -12,7 +12,7 @@ from gateway.platforms.qqbot.adapter import QQAdapter
 def make_adapter(**extra):
     adapter = QQAdapter(PlatformConfig(enabled=True, extra={
         "app_id": "123456", "client_secret": "test-only", "dm_policy": "allowlist", "allow_from": ["dm-user"],
-        "group_policy": "open", "bot_member_openid": "SELF_OPENID", **extra,
+        "group_policy": "open", **extra,
     }))
     adapter.handle_message = AsyncMock()
     return adapter
@@ -23,7 +23,7 @@ def group_message(**changes):
         "id": "message-1", "group_openid": "group-1",
         "author": {"member_openid": "sender-1"},
         "content": "<@SELF_OPENID> hello <@other-member>",
-        "mentions": [{"member_openid": "SELF_OPENID", "bot": True}],
+        "mentions": [{"member_openid": "SELF_OPENID", "bot": True, "is_you": True}],
         **changes,
     }
 
@@ -44,19 +44,18 @@ async def deliver(adapter, *events):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("content,mentions,accepted", [
-    ("<@SELF_OPENID> hello <@other-member>", None, True),
-    ("hello <@!SELF_OPENID>", [], True),
-    ("@Alice hello <@SELF_OPENID>", [], True),
-    ("hello", [{"member_openid": "SELF_OPENID", "bot": True}], True),
-    ("hello", [{"id": "SELF_OPENID", "bot": True}], True),
-    ("hello", None, False),
+    ("<@SELF_OPENID> hello <@other-member>", [{"member_openid": "SELF_OPENID", "bot": True, "is_you": True}], True),
+    ("hello <@!SELF_OPENID>", [{"id": "SELF_OPENID", "bot": True, "is_you": True}], True),
+    ("@Alice hello <@SELF_OPENID>", [{"id": "SELF_OPENID", "bot": True, "is_you": True}], True),
+    ("hello", [{"member_openid": "SELF_OPENID", "bot": True, "is_you": True}], True),
+    ("<@SELF_OPENID> hello", None, False),
+    ("<@SELF_OPENID> hello", [], False),
     ("<@all> hello", [], False),
-    ("<@OTHER_BOT> hello", [{"member_openid": "OTHER_BOT", "bot": True}], False),
+    ("<@OTHER_BOT> hello", [{"member_openid": "OTHER_BOT", "bot": True, "is_you": False}], False),
     ("<@123456> hello", [{"id": "123456", "bot": True}], False),
     ("hello", [{"is_you": True, "bot": True}], False),
-    ("<@SELF_OPENID-extra> hello", [], False),
     ("hello", [None, "SELF_OPENID", {"bot": True}], False),
-    ("hello", {"member_openid": "SELF_OPENID"}, False),
+    ("hello", {"member_openid": "SELF_OPENID", "bot": True, "is_you": True}, False),
 ])
 async def test_full_group_messages_require_this_bot(content, mentions, accepted):
     adapter = make_adapter()
@@ -75,8 +74,8 @@ async def test_full_group_messages_require_this_bot(content, mentions, accepted)
 
 @pytest.mark.asyncio
 async def test_full_events_fail_closed_without_confirmed_identity():
-    adapter = make_adapter(bot_member_openid="")
-    await deliver(adapter, ("GROUP_MESSAGE_CREATE", group_message()))
+    adapter = make_adapter()
+    await deliver(adapter, ("GROUP_MESSAGE_CREATE", group_message(mentions=[{"member_openid": "SELF_OPENID", "bot": True}])))
     adapter.handle_message.assert_not_awaited()
 
 
@@ -112,7 +111,7 @@ async def test_dual_delivery_handles_once_in_either_order(full_first, full_menti
 
 @pytest.mark.asyncio
 async def test_old_group_semantics_and_private_messages_do_not_require_identity():
-    adapter = make_adapter(bot_member_openid="")
+    adapter = make_adapter()
     await deliver(adapter,
         ("GROUP_AT_MESSAGE_CREATE", group_message(content="@Bot hello", mentions=[])),
         ("C2C_MESSAGE_CREATE", {"id": "private-1", "author": {"user_openid": "dm-user"}, "content": "hi"}),
@@ -132,3 +131,33 @@ async def test_full_group_attachment_uses_existing_ingest():
         await deliver(adapter, ("GROUP_MESSAGE_CREATE", message))
     adapter.handle_message.assert_awaited_once()
     assert adapter.handle_message.call_args.args[0].media_urls == ["https://example.com/image.png"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bot,is_you", [(True, "true"), (True, 1), (True, False), (True, None), ("true", True), (1, True), (False, True)])
+async def test_full_event_self_marker_requires_strict_boolean_values(bot, is_you):
+    adapter = make_adapter()
+    await deliver(adapter, ("GROUP_MESSAGE_CREATE", group_message(mentions=[{"member_openid": "SELF_OPENID", "bot": bot, "is_you": is_you}])))
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_full_events_use_each_groups_self_mention_without_manual_configuration():
+    adapter = make_adapter()
+    # READY's numeric self ID is intentionally unrelated to group member OpenIDs.
+    await deliver(adapter, ("READY", {"user": {"id": "READY_SELF_ID", "bot": True}}))
+    await deliver(adapter,
+        ("GROUP_MESSAGE_CREATE", group_message()),
+        ("GROUP_MESSAGE_CREATE", group_message(id="message-2", group_openid="group-2", content="<@SECOND_SELF> next <@SELF_OPENID>", mentions=[{"member_openid": "SECOND_SELF", "bot": True, "is_you": True}, {"member_openid": "SELF_OPENID", "bot": True, "is_you": False}])),
+        ("GROUP_MESSAGE_CREATE", group_message(id="message-3", group_openid="group-2", mentions=[{"member_openid": "SELF_OPENID", "bot": True, "is_you": False}])),
+    )
+    assert [c.args[0].text for c in adapter.handle_message.call_args_list] == ["hello <@other-member>", "next <@SELF_OPENID>"]
+    assert [c.args[0].source.chat_id for c in adapter.handle_message.call_args_list] == ["group-1", "group-2"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("identity", ["all", "", 123, "bad id", "bad>id"])
+async def test_invalid_self_identity_cannot_admit_full_events(identity):
+    adapter = make_adapter()
+    await deliver(adapter, ("GROUP_MESSAGE_CREATE", group_message(mentions=[{"member_openid": identity, "bot": True, "is_you": True}])))
+    adapter.handle_message.assert_not_awaited()

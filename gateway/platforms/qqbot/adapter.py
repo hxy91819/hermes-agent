@@ -1,10 +1,9 @@
 """QQ Bot platform adapter (Official QQ Bot API v2): WebSocket gateway for inbound
 events, REST (``api.sgroup.qq.com``) for outbound messages and media uploads.
 
-config.yaml ``platforms.qq.extra``: app_id / client_secret (or QQ_APP_ID /
+config.yaml ``platforms.qqbot.extra``: app_id / client_secret (or QQ_APP_ID /
 QQ_CLIENT_SECRET), markdown_support, dm_policy + allow_from, group_policy +
-group_allow_from (open | allowlist | disabled | pairing), bot_member_openid
-(the bot's group OpenID, required for full-message mode), and optional ``stt``
+group_allow_from (open | allowlist | disabled | pairing), and optional ``stt``
 {provider, baseUrl, apiKey, model} (or QQ_STT_* env vars). Voice transcription
 tries QQ's free ``asr_refer_text`` first, then the configured STT provider.
 """
@@ -154,9 +153,6 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._allow_from = _coerce_list(extra.get("allow_from") or extra.get("allowFrom"))
         self._group_policy = str(extra.get("group_policy", "pairing")).strip().lower()
         self._group_allow_from = _coerce_list(extra.get("group_allow_from") or extra.get("groupAllowFrom"))
-        # Group mention OpenIDs are not the numeric application ID. Without a
-        # confirmed identity, full-message delivery must not invoke the agent.
-        self._bot_member_openid = str(extra.get("bot_member_openid") or "").strip()
 
         self._session: Optional[aiohttp.ClientSession] = None
         self._ws: Optional[aiohttp.ClientWebSocketResponse] = None
@@ -786,19 +782,29 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             chat_id=group_openid, qq_chat_type="group", user_id=member, chat_type="group")
 
     def _mentions_this_bot(self, d: dict[str, Any]) -> bool:
-        bot_id = self._bot_member_openid
-        if not bot_id:
-            return False
-        if re.search(r"<@!?" + re.escape(bot_id) + r">", str(d.get("content") or "")):
-            return True
+        return bool(self._self_mention_ids(d))
+
+    @staticmethod
+    def _self_mention_ids(d: dict[str, Any]) -> set[str]:
+        # Full-mode delivery marks the receiving bot in mentions. Its group
+        # OpenID differs from the ID in READY/users/@me; use this event's marker
+        # rather than guessing from AppID or retaining an identity across groups.
         mentions = d.get("mentions")
-        return isinstance(mentions, list) and any(
-            isinstance(user, dict) and (user.get("member_openid") or user.get("id")) == bot_id
-            for user in mentions)
+        if not isinstance(mentions, list):
+            return set()
+        identities = set()
+        for user in mentions:
+            if not isinstance(user, dict) or user.get("bot") is not True or user.get("is_you") is not True:
+                continue
+            identity = user.get("member_openid") or user.get("id")
+            if isinstance(identity, str) and identity and identity != "all" and not re.search(r"[<>\s]", identity):
+                identities.add(identity)
+        return identities
 
     async def _handle_full_group_message(self, d, msg_id, content, author, timestamp) -> None:
         # Remove only this bot's invocation; preserve mentions of other members.
-        content = re.sub(r"<@!?" + re.escape(self._bot_member_openid) + r">", "", content).strip()
+        for identity in self._self_mention_ids(d):
+            content = re.sub(r"<@!?" + re.escape(identity) + r">", "", content).strip()
         await self._handle_group_message(d, msg_id, content, author, timestamp, strip_mention=False)
 
     async def _handle_guild_message(self, d, msg_id, content, author, timestamp) -> None:
