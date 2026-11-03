@@ -359,7 +359,7 @@ def close_all() -> int:
     return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
-def close_all_under(directory: str | Path) -> int:
+def close_all_under(directory: str | Path, *, selection_guard=None) -> int:
     """Force-close every shared SessionDB whose file lives under *directory*; returns the count.
 
     Profile delete rmtree (and a same-name recreate) fails while this process still holds
@@ -370,12 +370,15 @@ def close_all_under(directory: str | Path) -> int:
     close finishes. Wait for those directory-matching barriers even when no generation
     remains, otherwise rmtree still sees the open handle.
     """
+    # Maintenance can lose its lease while arbitrary end hooks are blocked.
+    # Revalidate under the same lock as acquire(): once the generations below
+    # are detached, a restored caller waits for their close and opens a NEW one.
     try:
         root = Path(directory).expanduser().resolve()
     except OSError:
         root = Path(directory).expanduser()
     teardown_barriers: dict[Path, _TeardownBarrier] = {}
-    with _lock:
+    with _lock, selection_guard() if selection_guard is not None else contextlib.nullcontext():
         generations = [
             generation
             for generation in list(_generations.values()) + list(_retired.values())

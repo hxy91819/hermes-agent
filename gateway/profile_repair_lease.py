@@ -33,10 +33,10 @@ def _read(home):
         return None
 
 
-def lease_active(home):
+def lease_active(home, *, token=None):
     from gateway.status import _pid_exists, get_process_start_time
     lease = _read(home)
-    if lease is None:
+    if lease is None or (token is not None and lease['token'] != token):
         return False
     pid = lease['pid']
     if _pid_exists(pid) and get_process_start_time(pid) in (None, lease['start_time']):
@@ -76,3 +76,15 @@ def end_lease(home, token):
     if lease.get('token') != token or not _repair_lock_free(home):
         raise ValueError('Profile maintenance is still owned by another repair')
     lease_path(home).unlink(missing_ok=True)
+
+
+def refuse_new_session_store(db_path):
+    """A temporary stop fences REST/background opens as well as interactive RPCs."""
+    import os
+    import sqlite3
+    if Path(db_path).name != 'state.db':
+        return
+    home = Path(db_path).parent
+    lease = _read(home)
+    if lease is not None and lease.get('pid') != os.getpid() and lease_active(home):
+        raise sqlite3.OperationalError('Profile session repair is in progress')
