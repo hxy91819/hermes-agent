@@ -394,6 +394,8 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     Ctrl-C, terminal close, SIGHUP) loses nothing."""
     if not session or session.get("_finalized"):
         return
+    from tui_gateway.profile_repair import checkpoint
+    checkpoint()
     session["_finalized"] = True
     _lock_vault_managers(session)
     if (history_ready := session.get("resume_history_ready")) is not None and not history_ready.is_set():
@@ -415,6 +417,7 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     if hasattr(agent, "_persist_session") and (snapshot := getattr(agent, "_session_messages", None)):
         with contextlib.suppress(Exception):
             agent._persist_session(snapshot)
+    checkpoint()
     # interrupted=True so crash-recovery plugins can flush state (mirrors cli.py atexit). The end-of-session
     # hooks and the memory commit read the provider's config/credentials at call time; every caller of this
     # chokepoint is an unscoped reaper/Timer/atexit/pool thread, so bind the SESSION's profile here — unscoped
@@ -428,14 +431,17 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
                     "on_session_end", completed=False, interrupted=True,
                     session_id=getattr(agent, "session_id", None) or session.get("session_key", ""),
                     model=getattr(agent, "model", "unknown"), platform=getattr(agent, "platform", None) or "tui")
+        checkpoint()
         if agent is not None and history and hasattr(agent, "commit_memory_session"):
             with contextlib.suppress(Exception):
                 agent.commit_memory_session(history)
 
+    checkpoint()
     session_key = session.get("session_key")
     session_id = getattr(agent, "session_id", None) or session_key
     # Returned to the client by ``session.close`` (the TUI shows them after its /new reset); reaper paths have no client.
     session["_end_msgs"] = _notify_session_boundary("on_session_finalize", session_id, _session_source(session)) or []
+    checkpoint()
     # End the state.db row so it doesn't linger as a ghost in /resume. Use session_id (agent.session_id), not
     # session_key: after compression the key may be the stale ended parent while session_id is the live continuation.
     # Fix for #20001.
@@ -557,22 +563,37 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
     slash-worker is closed in ``_finalize_session`` (the single chokepoint), NOT here. Idempotent via ``_finalized``."""
     if not session:
         return
-    _finalize_session(session, end_reason=end_reason)
-    _announce_session_reclaimed(session, end_reason)
-    with contextlib.suppress(Exception):
-        # Same user-visible hole as the interrupt's deny-resolve (#106678): a pending prompt
-        # popped by unregister must not just vanish from every surface without a notice.
-        _announce_cancelled_gateway_approvals(session, end_reason)
-    with contextlib.suppress(Exception):
-        from tools.approval import unregister_gateway_notify
-        # One approval callback per key: after a takeover it is the new runtime's registration.
-        if (key := session.get("session_key")) and not session.get("_lease_taken_over"):
-            unregister_gateway_notify(key)
-    # agent.close() → shutdown_memory_provider reads the provider's config/credentials at call time; same
-    # scope rule as _finalize_session (every caller here is an unscoped reaper/atexit/pool thread).
-    with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
-        if hasattr(agent := session.get("agent"), "close"):
-            agent.close()
+    from tui_gateway.profile_repair import checkpoint, DrainCancelled
+    try:
+        _finalize_session(session, end_reason=end_reason)
+        checkpoint()
+        _announce_session_reclaimed(session, end_reason)
+        with contextlib.suppress(Exception):
+            # Same user-visible hole as the interrupt's deny-resolve (#106678): a pending prompt
+            # popped by unregister must not just vanish from every surface without a notice.
+            _announce_cancelled_gateway_approvals(session, end_reason)
+        with contextlib.suppress(Exception):
+            from tools.approval import unregister_gateway_notify
+            # One approval callback per key: after a takeover it is the new runtime's registration.
+            if (key := session.get("session_key")) and not session.get("_lease_taken_over"):
+                unregister_gateway_notify(key)
+        # agent.close() → shutdown_memory_provider reads the provider's config/credentials at call time; same
+        # scope rule as _finalize_session (every caller here is an unscoped reaper/atexit/pool thread).
+        with contextlib.suppress(Exception), _session_profile_runtime_scope(session):
+            if hasattr(agent := session.get("agent"), "close"):
+                if end_reason == "session_repair":
+                    agent._cleanup_checkpoint = checkpoint
+                agent.close()
+    except DrainCancelled:
+        # Return only the old agent's reference, never a path-wide close or a
+        # reopened session lookup. A restored runtime may already share this DB.
+        agent = session.get("agent")
+        if agent is not None and getattr(agent, "_owns_session_db", False):
+            from hermes_state_registry import release_or_close
+            db, agent._session_db = agent._session_db, None
+            agent._owns_session_db = False
+            release_or_close(db)
+        raise
 
 
 def _attach_worker(sid: str, session: dict, worker) -> None:
