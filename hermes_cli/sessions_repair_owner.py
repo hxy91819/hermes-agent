@@ -18,13 +18,15 @@ def _wait_owner_state(owner, name, *, served, timeout):
         time.sleep(.1)
 
 
-def repair_with_profile_paused(db_path: Path, *, backup: bool):
+def repair_with_profile_paused(db_path: Path, *, backup: bool, drift_only: bool = False):
     from gateway.host_attach import host_gateway, invalidate_host_gateway_cache, profile_name_for_home, launched_by_other_tenant
     from gateway.control_socket import request_unserve_profile, request_serve_profile_hot
     import os
     import uuid
     from gateway.status import get_process_start_time
     from hermes_state_repair import repair_state_db_schema
+    from hermes_state_reconcile import repair_declarative_schema, schema_drift_reason
+    repair = repair_declarative_schema if drift_only else repair_state_db_schema
 
     home = db_path.parent
     invalidate_host_gateway_cache()
@@ -33,7 +35,7 @@ def repair_with_profile_paused(db_path: Path, *, backup: bool):
     # A launch Profile cannot be unserved by this protocol. Keep the native writer
     # refusal in that case; never turn a single-profile repair into a host stop.
     if owner is None or owner.standalone or launched_by_other_tenant(owner.home, home) or home.resolve() == owner.home.resolve():
-        return repair_state_db_schema(db_path, backup=backup)
+        return repair(db_path, backup=backup)
     lease = {"pid": os.getpid(), "start_time": get_process_start_time(os.getpid()), "token": uuid.uuid4().hex}
 
     report = {"repaired": False}
@@ -54,7 +56,7 @@ def repair_with_profile_paused(db_path: Path, *, backup: bool):
             deadline = time.monotonic() + 15
             while foreign_state_db_holders(db_path) and time.monotonic() < deadline:
                 time.sleep(.1)
-            report = repair_state_db_schema(db_path, backup=backup)
+            report = repair(db_path, backup=backup)
     finally:
         answer = request_serve_profile_hot(owner.home, name, repair_token=lease["token"])
         confirmed = isinstance(answer, dict) and answer.get("served") == name and not answer.get("error")
@@ -69,6 +71,8 @@ def repair_with_profile_paused(db_path: Path, *, backup: bool):
         elif stopped:
             from hermes_state_repair import _db_opens_cleanly
             reason = _db_opens_cleanly(db_path)
+            if reason is None and drift_only:
+                reason = schema_drift_reason(db_path)
             if reason is None:
                 # Serving opens SessionDB in the owner and can complete its native
                 # recovery after retiring the old handles. Confirm from a fresh

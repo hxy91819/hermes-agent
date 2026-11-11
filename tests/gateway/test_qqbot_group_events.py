@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.qqbot.adapter import QQAdapter
+from plugins.platforms.qqbot.adapter import QQAdapter
 
 
 def make_adapter(**extra):
@@ -36,7 +36,7 @@ async def deliver(adapter, *events):
         tasks.append(task)
         return task
 
-    with patch("gateway.platforms.qqbot.adapter.asyncio.create_task", side_effect=spawn):
+    with patch("plugins.platforms.qqbot.adapter.asyncio.create_task", side_effect=spawn):
         for seq, (event_type, message) in enumerate(events, 1):
             adapter._dispatch_payload({"op": 0, "t": event_type, "s": seq, "d": message})
     await asyncio.gather(*tasks)

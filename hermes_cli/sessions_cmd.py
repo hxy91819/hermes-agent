@@ -106,7 +106,7 @@ def _cmd_repair(args):
     if not db_path.exists():
         print(f"No session database at {db_path} (nothing to repair).")
         return
-    from hermes_state_reconcile import repair_declarative_schema, schema_drift_reason
+    from hermes_state_reconcile import schema_drift_reason
     # A missing canonical sessions table is not additive upgrade drift: creating
     # an empty one could hide lost history. Preserve corruption/recovery routing.
     reason = _db_opens_cleanly(db_path)
@@ -118,7 +118,6 @@ def _cmd_repair(args):
         except (sqlite3.Error, OSError) as exc:
             print(f"✗ Could not check session schema: {exc}")
             return 1
-    repair = repair_declarative_schema if drift_only else repair_state_db_schema
     if reason is None:
         print(f"✓ {db_path} opens cleanly — no repair needed.")
         return
@@ -126,7 +125,7 @@ def _cmd_repair(args):
     if getattr(args, "check_only", False):
         return 1
     print("Repairing (a backup copy is made first)…")
-    report = repair_with_profile_paused(db_path, backup=not getattr(args, "no_backup", False))
+    report = repair_with_profile_paused(db_path, backup=not getattr(args, "no_backup", False), drift_only=drift_only)
     if report.get("repaired"):
         if report.get("backup_path"):
             print(f"  backup: {report['backup_path']}")
