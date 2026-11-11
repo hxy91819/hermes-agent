@@ -113,3 +113,56 @@ async def test_explicit_media_tag_still_delivers_post_stream(tmp_path, monkeypat
     assert str(media_file) in unquote(images_kwargs["images"][0][0])
 
 
+
+
+@pytest.mark.asyncio
+async def test_streamed_media_uses_session_key_and_reports_drops(monkeypatch):
+    """Split (ssh-sandbox) instances: the post-stream rescan runs after the turn cleared its session
+    vars, so it must pass the session key for the remote fetch; a path that still cannot be delivered
+    gets a user-visible notice instead of vanishing (2026-11-11 QQ/WeChat report)."""
+    seen = {}
+
+    def fake_filter(media_files, session_key="", dropped=None):
+        seen["session_key"] = session_key
+        dropped.extend({"path": p, "reason": "not found on this host"} for p, _ in media_files)
+        return []
+
+    monkeypatch.setattr(BasePlatformAdapter, "filter_media_delivery_paths", staticmethod(fake_filter))
+    runner = _fake_runner({"thread_ts": "171.000001"})
+    runner._session_key_for_source = lambda source: "agent:main:slack:group:C123CHAN"
+    adapter = _adapter()
+    adapter._notify_media_delivery_failure = AsyncMock()
+    await GatewayRunner._deliver_media_from_response(
+        runner, "done\nMEDIA:/root/deliver/report.zip", _event(), adapter)
+    assert seen["session_key"] == "agent:main:slack:group:C123CHAN"
+    adapter.send_document.assert_not_awaited()
+    adapter._notify_media_delivery_failure.assert_awaited_once_with(
+        "C123CHAN", "/root/deliver/report.zip", metadata={"thread_ts": "171.000001"})
+
+
+@pytest.mark.asyncio
+async def test_streamed_media_keeps_profile_scope_in_worker_and_failure_notice(monkeypatch):
+    from contextlib import contextmanager
+    from contextvars import ContextVar
+    scope = ContextVar("test_media_profile", default="launch")
+    @contextmanager
+    def delivery_scope(source):
+        token = scope.set("secondary")
+        try:
+            yield
+        finally:
+            scope.reset(token)
+    def fake_filter(media_files, **kwargs):
+        assert scope.get() == "secondary"
+        return media_files
+    async def notice(*args, **kwargs):
+        assert scope.get() == "secondary"
+    monkeypatch.setattr(BasePlatformAdapter, "filter_media_delivery_paths", staticmethod(fake_filter))
+    adapter = _adapter()
+    adapter._media_delivery_scope = delivery_scope
+    adapter.send_document.return_value = SendResult(success=False, error="upload failed")
+    adapter._notify_media_delivery_failure = AsyncMock(side_effect=notice)
+    await GatewayRunner._deliver_media_from_response(
+        _fake_runner({}), "MEDIA:/root/deliver/report.zip", _event(), adapter)
+    adapter._notify_media_delivery_failure.assert_awaited_once()
+    assert scope.get() == "launch"
