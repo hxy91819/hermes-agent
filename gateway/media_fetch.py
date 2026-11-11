@@ -17,6 +17,7 @@ and skip the recency gate strict mode exists for.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import posixpath
@@ -62,26 +63,74 @@ def remote_path_is_denied(path: str, remote_home: Optional[str]) -> bool:
                for rel in _DENIED_HOME_RELATIVE for i in range(len(parts) - len(rel.parts) + 1))
 
 
-def _active_remote_env():
-    """The live remote BaseEnvironment for the current session, or None (local backend / no env yet).
-    Keyed by the session id the turn registered its sandbox under (falls back to the session key)."""
+def _active_remote_env(session_key: str = ""):
+    """The remote BaseEnvironment for the delivering session, or None (local backend / unavailable).
+
+    Inside a turn the session ContextVars still identify the sandbox. Final-response delivery runs
+    after the turn cleared them, so ``_resolve_container_task_id`` collapses to ``"default"`` while
+    the env lives under ``session:<key>`` — the lookup therefore re-binds the delivering
+    ``session_key``. If the env is gone by then (idle reaper, eviction after an SSH failure) it is
+    lazily re-created via the same ``ensure_task_env`` machinery ``vision_analyze`` uses. Every None
+    is logged with its reason."""
     from agent.prompt_builder import _REMOTE_TERMINAL_BACKENDS, _plugin_backend_is_remote
     from gateway.platforms.base import _tenv
     from gateway.session_context import get_session_env
-    from tools.terminal_tool_lifecycle import get_active_env
+    from tools.terminal_tool_lifecycle import ensure_task_env, get_active_env
     backend = _tenv("TERMINAL_ENV", "local").strip().lower()
     if backend not in _REMOTE_TERMINAL_BACKENDS and not _plugin_backend_is_remote(backend):
         return None
-    return get_active_env(get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY") or "default")
+    bound = get_session_env("HERMES_SESSION_ID") or get_session_env("HERMES_SESSION_KEY")
+    if not (bound or session_key):
+        env = get_active_env("default")
+        if env is None:
+            logger.warning("Remote media fetch skipped: no %s sandbox and no session to bind", backend)
+        return env
+    task_id = session_key or bound
+    with _bound_session_key(session_key or None):
+        # Lookup inside the binding so get_active_env derives the same session:<key> slot.
+        env = get_active_env(task_id)
+        if env is not None:
+            return env
+        try:
+            env = ensure_task_env(task_id)
+        except Exception:
+            logger.warning("Remote media fetch: %s sandbox re-attach raised", backend, exc_info=True)
+            env = None
+    if env is None:
+        logger.warning("Remote media fetch skipped: %s sandbox unavailable for session %s",
+                       backend, task_id[:48])
+    else:
+        logger.info("Remote media fetch re-attached the %s sandbox for session %s", backend, task_id[:48])
+    return env
 
 
-def fetch_remote_media(path: str) -> Optional[str]:
+@contextlib.contextmanager
+def _bound_session_key(session_key: Optional[str]):
+    """Temporarily bind ``HERMES_SESSION_KEY`` so ``_resolve_container_task_id`` derives the same
+    ``session:<key>`` slot the turn's terminal tool used. No-op when ``session_key`` is None."""
+    if not session_key:
+        yield
+        return
+    from gateway.session_context import _VAR_MAP
+    var = _VAR_MAP["HERMES_SESSION_KEY"]
+    token = var.set(session_key)
+    try:
+        yield
+    finally:
+        var.reset(token)
+
+
+def fetch_remote_media(path: str, session_key: str = "") -> Optional[str]:
     """Host path of a validated copy of sandbox file ``path``, or None (never raises). Only fires
-    when a remote backend is active; the caller has already failed local validation."""
+    when a remote backend is active; the caller has already failed local validation.
+
+    ``session_key`` is the delivering turn's gateway session key. Final-response MEDIA is extracted
+    after the turn already cleared its session ContextVars, so the env is looked up — and lazily
+    re-created if it was reaped — under that key instead of the cleared ``"default"`` fallback."""
     from gateway.media_policy import media_delivery_strict
     if media_delivery_strict():
         return None
-    env = _active_remote_env()
+    env = _active_remote_env(session_key)
     if env is None:
         return None
     from gateway.platforms.base import (

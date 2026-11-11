@@ -235,53 +235,75 @@ class GatewayNotificationsMixin(GatewayUpdateNotificationsMixin, GatewayNotifica
         #20834.
         """
         from urllib.parse import quote as _quote
-        with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
-            # Capture [[as_document]] before extract_media strips it: images then go via send_document.
-            force_document_attachments = "[[as_document]]" in response
-            from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
-            media_files, cleaned = adapter.extract_media(response)
-            media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
-            # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
-            # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
-            # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the
-            # model deliberately attaching a file — including a user-requested resend. Stale auto-appended
-            # tags are deduped upstream in _collect_auto_append_media_tags with history_media_paths. Mirrors
-            # the same filter removal on the non-streaming path in gateway/platforms/base.py. Bare local
-            # paths in an already-streamed reply are text the user has seen (or stale inspected content),
-            # not an attachment request.
-            adapter.extract_images(cleaned)
-            _thread_meta = (
-                dict(thread_metadata)
-                if thread_metadata is not None
-                else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
-            )
-            chat_id = event.source.chat_id
-            # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
-            def _is_photo(media_path: str, is_voice: bool) -> bool:
-                ext = Path(media_path).suffix.lower()
-                return ext in _IMAGE_EXTS and not is_voice and not force_document_attachments
-
-            image_paths = [p for p, v in media_files if _is_photo(p, v)]
-            non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
-            if image_paths:
-                try:
-                    images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
-                except Exception as e:
-                    logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
-            for media_path, is_voice in non_image_media:
-                try:
+        _scope = getattr(adapter, "_media_delivery_scope", None)
+        with _scope(event.source) if _scope is not None else contextlib.nullcontext():
+            with _log_suppressed(logging.WARNING, "Post-stream media extraction failed: %s"):
+                # Capture [[as_document]] before extract_media strips it: images then go via send_document.
+                force_document_attachments = "[[as_document]]" in response
+                from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
+                media_files, cleaned = adapter.extract_media(response)
+                # The turn already cleared its session vars: pass the key so a remote-sandbox (ssh) path is
+                # fetched from this session's env, off-loop (an SSH re-attach + fetch can take seconds).
+                dropped_media: list[dict] = []
+                if media_files:
+                    _key_for = getattr(self, "_session_key_for_source", None)
+                    _session_key = _key_for(event.source) if _key_for is not None else ""
+                    media_files = await asyncio.to_thread(
+                        BasePlatformAdapter.filter_media_delivery_paths, media_files,
+                        session_key=_session_key, dropped=dropped_media)
+                # Strip image URLs (parity with the non-streaming chain); no extract_local_files here.
+                # Do NOT deduplicate explicit MEDIA tags against prior turns here (#73771). This rescan is
+                # already EXPLICIT-ONLY (see docstring): a MEDIA: directive in the final streamed reply is the
+                # model deliberately attaching a file — including a user-requested resend. Stale auto-appended
+                # tags are deduped upstream in _collect_auto_append_media_tags with history_media_paths. Mirrors
+                # the same filter removal on the non-streaming path in gateway/platforms/base.py. Bare local
+                # paths in an already-streamed reply are text the user has seen (or stale inspected content),
+                # not an attachment request.
+                adapter.extract_images(cleaned)
+                _thread_meta = (
+                    dict(thread_metadata)
+                    if thread_metadata is not None
+                    else self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+                )
+                chat_id = event.source.chat_id
+                # Images go out as one batch (e.g. Signal's multi-attachment RPC) unless [[as_document]].
+                def _is_photo(media_path: str, is_voice: bool) -> bool:
                     ext = Path(media_path).suffix.lower()
-                    if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
-                        await adapter.send_voice(
-                            chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
-                        )
-                    elif ext in _VIDEO_EXTS:
-                        await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
-                    else:
-                        await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
-                except Exception as e:
-                    logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                    return ext in _IMAGE_EXTS and not is_voice and not force_document_attachments
+
+                image_paths = [p for p, v in media_files if _is_photo(p, v)]
+                non_image_media = [(p, v) for p, v in media_files if not _is_photo(p, v)]
+                if image_paths:
+                    try:
+                        images = [(f"file://{_quote(p)}", "") for p in image_paths]
+                        result = await adapter.send_multiple_images(chat_id=chat_id, images=images, metadata=_thread_meta)
+                        if result is not None and not result.success:
+                            dropped_media.extend({"path": p, "reason": "image upload failed"} for p in image_paths)
+                    except Exception as e:
+                        dropped_media.extend({"path": p, "reason": "image upload raised"} for p in image_paths)
+                        logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
+                for media_path, is_voice in non_image_media:
+                    try:
+                        ext = Path(media_path).suffix.lower()
+                        if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
+                            result = await adapter.send_voice(
+                                chat_id=chat_id, audio_path=media_path, metadata=_thread_meta, is_voice=is_voice,
+                            )
+                        elif ext in _VIDEO_EXTS:
+                            result = await adapter.send_video(chat_id=chat_id, video_path=media_path, metadata=_thread_meta)
+                        else:
+                            result = await adapter.send_document(chat_id=chat_id, file_path=media_path, metadata=_thread_meta)
+                        if result is not None and not result.success:
+                            dropped_media.append({"path": media_path, "reason": "media upload failed"})
+                    except Exception as e:
+                        dropped_media.append({"path": media_path, "reason": "media upload raised"})
+                        logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
+                # The streamed text showed the MEDIA tag; a rejected path must not vanish silently.
+                notify = getattr(adapter, "_notify_media_delivery_failure", None)
+                for drop in dropped_media:
+                    logger.warning("[%s] Post-stream MEDIA attachment not delivered (%s)", adapter.name, drop.get("reason"))
+                    if notify is not None:
+                        await notify(chat_id, str(drop.get("path", "")), metadata=_thread_meta)
 
 
     async def _deliver_queued_first_response(
