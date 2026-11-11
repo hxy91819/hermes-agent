@@ -39,7 +39,7 @@ class _FakeRemoteEnv:
 @pytest.fixture
 def remote_env(monkeypatch, tmp_path):
     env = _FakeRemoteEnv()
-    monkeypatch.setattr(media_fetch, "_active_remote_env", lambda: env)
+    monkeypatch.setattr(media_fetch, "_active_remote_env", lambda session_key="": env)
     monkeypatch.setattr("gateway.platforms.base.DOCUMENT_CACHE_DIR", tmp_path / "cache" / "documents")
     monkeypatch.setattr("gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS", (tmp_path / "cache" / "documents",))
     return env
@@ -61,7 +61,7 @@ def test_local_backend_and_strict_mode_do_not_fetch(monkeypatch, tmp_path, remot
     monkeypatch.setenv("HERMES_MEDIA_DELIVERY_STRICT", "1")
     assert BasePlatformAdapter.filter_media_delivery_paths([("/home/agent/out/report.txt", False)]) == []
     monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT")
-    monkeypatch.setattr(media_fetch, "_active_remote_env", lambda: None)
+    monkeypatch.setattr(media_fetch, "_active_remote_env", lambda session_key="": None)
     assert BasePlatformAdapter.filter_media_delivery_paths([(str(tmp_path / "nope.txt"), False)]) == []
     assert remote_env.fetched == []
 

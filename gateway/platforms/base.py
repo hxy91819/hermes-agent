@@ -1183,7 +1183,7 @@ def _validated_delivery_path(raw_path, session_key: str, label: str,
     safe_path = validate_media_delivery_path(raw, session_key=session_key)
     if not safe_path:
         from gateway.media_fetch import fetch_remote_media
-        safe_path = fetch_remote_media(raw)
+        safe_path = fetch_remote_media(raw, session_key=session_key)
     if not safe_path:
         # Say WHY: a path that does not exist on the host is the common case (a model hallucinated or
         # a sandbox path failed to translate) and is not a security rejection.
@@ -1613,7 +1613,8 @@ class _ExtractedResponse:
     local_files: list
     force_document_attachments: bool
     pre_extract: str
-
+    # MEDIA tags stripped from the text but rejected by delivery validation ({"path", "reason"}).
+    dropped_media: list = dataclasses.field(default_factory=list)
 
 _PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
@@ -4436,6 +4437,13 @@ class BasePlatformAdapter(ABC):
             event, media_files, local_files,
             force_document_attachments=extracted.force_document_attachments,
             human_delay=human_delay, metadata=metadata, record_delivery=record_delivery)
+        # A MEDIA tag was already stripped from the text; a rejected path must not vanish silently.
+        for drop in extracted.dropped_media:
+            logger.warning("[%s] MEDIA attachment not delivered (%s): %s", self.name,
+                           drop.get("reason"), _log_safe_path(drop.get("path", "")))
+            record_delivery(SendResult(success=False, error=f"media dropped: {drop.get('reason')}"))
+            await self._notify_media_delivery_failure(
+                event.source.chat_id, str(drop.get("path", "")), metadata=metadata)
         if not (anything_sent or images or local_files or media_files) and extracted.pre_extract.strip():
             logger.error("[%s] response_delivery_dropped: non-empty response "
                          "(%d chars) produced no delivered message or attachment "
@@ -4467,7 +4475,15 @@ class BasePlatformAdapter(ABC):
         # bare-path validator infer the sandbox from the ACTIVE profile (#109024).
         with self._media_delivery_scope(event.source):
             media_files, response = self.extract_media(response)
-            media_files = self.filter_media_delivery_paths(media_files, session_key=session_key)
+            dropped_media: list[dict] = []
+            if media_files:
+                # Off-loop: a remote-sandbox MEDIA path may need an SSH re-attach + fetch (seconds);
+                # to_thread copies this context, so the routed media scope still applies.
+                _filter = self.filter_media_delivery_paths
+                _kwargs: dict[str, Any] = {"session_key": session_key}
+                if "dropped" in inspect.signature(_filter).parameters:  # overrides may predate it
+                    _kwargs["dropped"] = dropped_media
+                media_files = await asyncio.to_thread(lambda: _filter(media_files, **_kwargs))
             images, text_content = self.extract_images(response)
             # Strip any remaining internal directives from message body (fixes #1561). _strip_media_directives
             # shares MEDIA_TAG_CLEANUP_RE, so a MEDIA: tag with an unknown extension is intentionally left in
@@ -4502,7 +4518,8 @@ class BasePlatformAdapter(ABC):
                 text_content = _recovered
         return _ExtractedResponse(
             text_content=text_content, images=images, media_files=media_files,
-            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract)
+            local_files=local_files, force_document_attachments=force_document, pre_extract=pre_extract,
+            dropped_media=dropped_media)
 
     async def _fire_post_delivery_callback(self, session_key: str, interrupt_event: asyncio.Event) -> None:
         """Run the one-shot post-delivery callback (bounded, errors swallowed). The generation is
