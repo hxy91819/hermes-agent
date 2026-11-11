@@ -4480,7 +4480,7 @@ class BasePlatformAdapter(ABC):
                 # Off-loop: a remote-sandbox MEDIA path may need an SSH re-attach + fetch (seconds);
                 # to_thread copies this context, so the routed media scope still applies.
                 _filter = self.filter_media_delivery_paths
-                _kwargs = {"session_key": session_key}
+                _kwargs: dict[str, Any] = {"session_key": session_key}
                 if "dropped" in inspect.signature(_filter).parameters:  # overrides may predate it
                     _kwargs["dropped"] = dropped_media
                 media_files = await asyncio.to_thread(lambda: _filter(media_files, **_kwargs))
