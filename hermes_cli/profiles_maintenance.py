@@ -9,5 +9,3 @@ def parked_marker_path(home: Path) -> Path:
 def profile_is_parked(home: Path) -> bool:
     """Marker contents are deliberately irrelevant, including for provisioning."""
     return parked_marker_path(home).exists()
-
-
